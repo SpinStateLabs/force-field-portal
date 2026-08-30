@@ -1,0 +1,6 @@
+# Force-Field Portal — Netlify configuration
+[build]
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"

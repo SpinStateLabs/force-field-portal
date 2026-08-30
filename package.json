@@ -1,0 +1,23 @@
+{
+  "name": "force-field-portal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Force-Field Portal — public SaaS portal for the Force Field Protocol governance platform (Spin State Labs)",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0",
+    "@netlify/functions": "^2.8.0",
+    "bcryptjs": "^2.4.3",
+    "jose": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}

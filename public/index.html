@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Force-Field Portal — Governance for Autonomous Agents</title>
+<meta name="description" content="Force-Field Portal: the Force Field Protocol governance engine as a service. Register, mint an API key, and put every agent action in front of the sentinel.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="logo" href="index.html">Force-Field <span class="logo-dot" aria-hidden="true">&#9679;</span> Portal</a>
+    <div class="nav-links">
+      <a href="#pricing">Pricing</a>
+      <a href="https://github.com/SpinStateLabs/Force-Field">GitHub</a>
+      <a class="btn btn-secondary btn-small" href="app.html">Sign in</a>
+    </div>
+  </div>
+</nav>
+
+<main>
+
+  <section class="hero container">
+    <p class="eyebrow">Force Field Protocol &middot; Force-Field as a Service</p>
+    <h1 class="hero-title">Governance for autonomous agents, delivered as a service.</h1>
+    <p class="hero-sub">
+      Register an account, mint an API key, and put every action your agents take in front of
+      a governance engine that answers ALLOW, BLOCK, or ESCALATE &mdash; with the whole history
+      sealed in a hash-chained ledger.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary" href="app.html">Start on Sandbox</a>
+      <a class="btn btn-secondary" href="https://github.com/SpinStateLabs/Force-Field">View on GitHub</a>
+    </div>
+    <ul class="field-letters" aria-label="FIELD stands for Federated, Identity, Enforcement, Ledger, Delegation">
+      <li><span class="fl">F</span>ederated</li>
+      <li><span class="fl">I</span>dentity</li>
+      <li><span class="fl">E</span>nforcement</li>
+      <li><span class="fl">L</span>edger</li>
+      <li><span class="fl">D</span>elegation</li>
+    </ul>
+  </section>
+
+  <section class="container section">
+    <h2 class="section-title">How it works</h2>
+    <ol class="steps">
+      <li class="step card">
+        <span class="step-num" aria-hidden="true">1</span>
+        <h3>Register &amp; get an API key</h3>
+        <p>Create a portal account and mint an <code>ff_live_</code> key from the dashboard.
+        The key is shown once at creation &mdash; the portal stores only a hash.</p>
+      </li>
+      <li class="step card">
+        <span class="step-num" aria-hidden="true">2</span>
+        <h3>Register your agent &amp; mint a scoped delegation</h3>
+        <p>Declare the agent's identity in the registry, then grant it a scoped delegation:
+        what it may do, on whose behalf, and within what limits.</p>
+      </li>
+      <li class="step card">
+        <span class="step-num" aria-hidden="true">3</span>
+        <h3>Every action checked</h3>
+        <p>Each action is put to the sentinel and comes back
+        <span class="chip chip-ok">ALLOW</span> <span class="chip chip-err">BLOCK</span>
+        <span class="chip chip-warn">ESCALATE</span> &mdash; and everything is sealed in a
+        hash-chained ledger.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="container section">
+    <h2 class="section-title">One call to the sentinel</h2>
+    <pre class="code"><code>curl -X POST https://YOUR-PORTAL-DOMAIN/api/v1/sentinel/check \
+  -H "x-api-key: ff_live_YOUR_KEY" \
+  -H "content-type: application/json" \
+  -d '{"agent_id": "my-agent", "action": "example.action"}'</code></pre>
+    <p class="hint">
+      Illustrative request shape &mdash; see the repository for the sentinel's request schema.
+      While no estate is attached to the gateway, <code>/api/v1/*</code> returns an honest 503
+      instead of a fabricated verdict.
+    </p>
+  </section>
+
+  <section class="container section" id="pricing">
+    <h2 class="section-title">Pricing</h2>
+    <p class="pricing-note">Launch pricing &mdash; subject to change.</p>
+    <div class="tier-grid">
+
+      <div class="tier-card">
+        <h3 class="tier-name">Sandbox</h3>
+        <p class="tier-price">$0<span class="per">/mo</span></p>
+        <ul class="tier-features">
+          <li>10 requests/min &middot; 200 requests/day</li>
+          <li>Shared sandbox estate</li>
+          <li>Rate-limited</li>
+          <li>Sandbox data may be wiped</li>
+        </ul>
+        <a class="btn btn-primary" href="app.html">Start on Sandbox</a>
+      </div>
+
+      <div class="tier-card tier-featured">
+        <h3 class="tier-name">Operator</h3>
+        <p class="tier-price">$49<span class="per">/mo</span></p>
+        <ul class="tier-features">
+          <li>60 requests/min &middot; 5,000 requests/day</li>
+          <li>Dedicated estate</li>
+          <li>Provisioned manually at launch</li>
+        </ul>
+        <a class="btn btn-secondary" href="app.html">Talk to us</a>
+      </div>
+
+      <div class="tier-card">
+        <h3 class="tier-name">Sovereign</h3>
+        <p class="tier-price">$249<span class="per">/mo</span></p>
+        <ul class="tier-features">
+          <li>300 requests/min &middot; 50,000 requests/day</li>
+          <li>Dedicated estate</li>
+          <li>Federation &amp; custom manifests</li>
+          <li>Provisioned manually at launch</li>
+        </ul>
+        <a class="btn btn-secondary" href="app.html">Talk to us</a>
+      </div>
+
+    </div>
+    <p class="pricing-honest">
+      Honest note: paid checkout is not wired yet, and dedicated estates are provisioned
+      manually in v0. Register on Sandbox and we will follow up &mdash; no instant paid
+      activation is promised.
+    </p>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>Spin State Labs &middot; Force Field Protocol</p>
+</footer>
+
+</body>
+</html>

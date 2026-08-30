@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Force-Field Portal — Dashboard</title>
+<meta name="description" content="Manage your Force-Field Portal account and API keys.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="logo" href="index.html">Force-Field <span class="logo-dot" aria-hidden="true">&#9679;</span> Portal</a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="https://github.com/SpinStateLabs/Force-Field">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container app-main">
+
+  <p id="boot-note" class="muted">Checking session&hellip;</p>
+
+  <section id="auth-view" class="hidden" aria-label="Sign in or register">
+    <div class="card auth-card">
+      <div class="tabs" role="tablist" aria-label="Authentication">
+        <button id="tab-login" class="tab active" type="button" role="tab" aria-selected="true">Log in</button>
+        <button id="tab-register" class="tab" type="button" role="tab" aria-selected="false">Register</button>
+      </div>
+      <form id="auth-form">
+        <div class="form-row">
+          <label for="auth-email">Email</label>
+          <input id="auth-email" name="email" type="email" required autocomplete="email">
+        </div>
+        <div class="form-row">
+          <label for="auth-password">Password</label>
+          <input id="auth-password" name="password" type="password" required minlength="10" autocomplete="current-password">
+          <p class="hint">At least 10 characters. New accounts start on the free Sandbox tier.</p>
+        </div>
+        <div id="auth-error" class="error-box hidden" role="alert"></div>
+        <button id="auth-submit" class="btn btn-primary btn-wide" type="submit">Log in</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="dash-view" class="hidden" aria-label="Dashboard">
+
+    <div class="card account-row">
+      <div class="account-info">
+        <span id="acct-email" class="acct-email"></span>
+        <span id="acct-tier" class="chip chip-ok"></span>
+        <span id="acct-limits" class="acct-limits muted"></span>
+      </div>
+      <button id="logout-btn" class="btn btn-secondary btn-small" type="button">Log out</button>
+    </div>
+
+    <p class="estate-line">Estate status: <span id="estate-chip" class="chip chip-warn">checking&hellip;</span></p>
+
+    <div class="card panel">
+      <h2 class="panel-title">API keys</h2>
+      <div class="table-wrap">
+        <table class="keys-table">
+          <thead>
+            <tr>
+              <th scope="col">Label</th>
+              <th scope="col">Prefix</th>
+              <th scope="col">Created</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="keys-body"></tbody>
+        </table>
+      </div>
+      <form id="new-key-form" class="new-key-row">
+        <label for="new-key-label" class="visually-hidden">New key label</label>
+        <input id="new-key-label" type="text" maxlength="64" placeholder="key label (e.g. staging)" autocomplete="off">
+        <button id="new-key-btn" class="btn btn-primary" type="submit">New key</button>
+      </form>
+      <p class="hint">Up to 5 active keys per account. A key's plaintext is shown once at creation &mdash; the portal stores only a hash.</p>
+      <div id="keys-error" class="error-box hidden" role="alert"></div>
+    </div>
+
+    <div class="card panel">
+      <h2 class="panel-title">Quickstart</h2>
+      <p>Send a check to the sentinel through the authenticated gateway:</p>
+      <pre class="code"><code id="quickstart-code"></code></pre>
+      <p class="hint">
+        Replace <code>ff_live_YOUR_KEY</code> with one of your keys. While no estate is
+        attached, the gateway answers 503 with an honest error instead of a fabricated verdict.
+      </p>
+    </div>
+
+  </section>
+
+</main>
+
+<div id="key-modal" class="modal-backdrop hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">
+    <h3 id="key-modal-title">API key created</h3>
+    <p class="warn-text">This key is shown once. Copy it now &mdash; the portal stores only a hash and cannot show it again.</p>
+    <pre class="code key-value"><code id="key-modal-value"></code></pre>
+    <div class="modal-actions">
+      <button id="key-copy-btn" class="btn btn-secondary" type="button">Copy key</button>
+      <button id="key-modal-close" class="btn btn-primary" type="button">Done</button>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <p>Spin State Labs &middot; Force Field Protocol</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
