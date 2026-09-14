@@ -9,8 +9,11 @@ import {
   SELF_AGENTS,
   STEPS,
   advanceEstate,
+  checkEstateHealth,
   estateSecret,
   getEstate,
+  upgradeEstateImage,
+  type Estate,
   newAppName,
   publicEstate,
   queueEstate,
@@ -37,6 +40,7 @@ const BOOTSTRAP_OUT = {
   // A new account has no scopes yet, so bootstrap writes the platform row only.
   roster_rows: 1,
   customer_row: false,
+  owners: 2,
 };
 
 /** In-memory stand-in for FlyClient; records every call. */
@@ -68,6 +72,8 @@ class FakeFly {
     }
   }
   async createApp(name: string) { this.rec("createApp", name); this.apps.add(name); }
+  appExists = true;
+  async getApp(name: string) { this.rec("getApp", name); return this.appExists ? { name } : null; }
   async listIps(app: string) { this.rec("listIps", app); return this.ips[app] ?? []; }
   async allocateIp(app: string, type: string) {
     this.rec("allocateIp", app, type);
@@ -400,5 +406,143 @@ describe("dedicated estates", () => {
     expect(STEPS[0]).toBe("create_app");
     expect(STEPS[STEPS.length - 1]).toBe("done");
     expect(new Set(STEPS).size).toBe(STEPS.length);
+  });
+
+  it("two concurrent creators end up with ONE estate record (create-only write)", async () => {
+    const [a, b] = await Promise.all([queueEstate(user), queueEstate(user)]);
+    expect(a.app).toBe(b.app);
+    expect(a.created_at).toBe(b.created_at);
+    const stored = (await getEstate(user.id))!;
+    expect(stored.log.filter((l) => l.step === "queue")).toHaveLength(1);
+  });
+
+  async function readyEstate(fly: FakeFly): Promise<Estate> {
+    const e = await queueEstate(user);
+    e.status = "ready";
+    e.step = "done";
+    e.machine_id = "m_1";
+    e.volume_id = "vol_ff_data";
+    e.url = "https://" + e.app + ".fly.dev";
+    e.image = "registry.fly.io/force-field-sandbox:test";
+    e.fingerprints = { "ledger-sign": "fs" };
+    e.ready_at = new Date().toISOString();
+    fly.machines[e.app] = [{ id: "m_1", name: "estate", config: { image: e.image } }];
+    await saveEstate(e);
+    return e;
+  }
+
+  it("health check: flags an unhealthy ledger, clears the flag when it recovers, and never changes a ready status", async () => {
+    const fly = new FakeFly();
+    const e = await readyEstate(fly);
+    const bad = healthFetch({ "/ledger/health": { ok: true, appendable: false } });
+    expect(await checkEstateHealth((await getEstate(user.id))!, fly as any, { fetchImpl: bad })).toBe("unhealthy");
+    let cur = (await getEstate(user.id))!;
+    expect(cur.status).toBe("ready");
+    expect(cur.health).toMatchObject({ ok: false });
+    expect(cur.health!.note).toMatch(/appendable=false/);
+    expect(cur.log.at(-1)!.note).toMatch(/^PROBLEM/);
+
+    const gone = healthFetch({});
+    expect(await checkEstateHealth(cur, fly as any, { fetchImpl: gone })).toBe("unhealthy");
+    expect((await getEstate(user.id))!.health!.note).toMatch(/did not answer 200/);
+
+    const good = healthFetch({ "/ledger/health": { ok: true, appendable: true, signing: "on" } });
+    expect(await checkEstateHealth((await getEstate(user.id))!, fly as any, { fetchImpl: good })).toBe("ok");
+    cur = (await getEstate(user.id))!;
+    expect(cur.health).toMatchObject({ ok: true, note: "ledger healthy and appendable" });
+    expect(cur.log.at(-1)!.note).toMatch(/healthy again/);
+    expect(cur.status).toBe("ready");
+    // Not ready: nothing is checked.
+    cur.status = "suspended";
+    expect(await checkEstateHealth(cur, fly as any, { fetchImpl: good })).toBe("skipped");
+    expect(fly.count("stopMachine")).toBe(0);
+    expect(e.app).toBe(cur.app);
+  });
+
+  it("health check: a Fly app destroyed outside the portal becomes an honest error that a retry rebuilds from scratch", async () => {
+    const fly = new FakeFly();
+    await readyEstate(fly);
+    fly.appExists = false;
+    expect(await checkEstateHealth((await getEstate(user.id))!, fly as any, { fetchImpl: healthFetch({}) })).toBe("app_missing");
+    const cur = (await getEstate(user.id))!;
+    expect(cur.status).toBe("error");
+    expect(cur.error).toMatch(/estate_app_missing/);
+    expect(cur.step).toBe("create_app");
+    expect(cur.machine_id).toBeNull();
+    expect(cur.volume_id).toBeNull();
+    expect(cur.url).toBeNull();
+    expect(cur.fingerprints).toEqual({});
+    expect(cur.self_agents).toEqual({});
+    expect(cur.image).toBeNull();
+    expect(resolveRoute(user, cur)).toMatchObject({ kind: "refuse", status: 503, code: "estate_error" });
+    // A retry starts the state machine over (a fresh app, new keys), never a silent "ready".
+    await retryEstate(cur);
+    expect((await getEstate(user.id))!.step).toBe("create_app");
+    expect((await getEstate(user.id))!.status).toBe("provisioning");
+  });
+
+  it("image upgrade: no-op on the current image, moves to the configured image in the armed posture, and records the result", async () => {
+    const fly = new FakeFly();
+    await readyEstate(fly);
+    const noSleep = async () => {};
+    const same = await upgradeEstateImage((await getEstate(user.id))!, fly as any, { sleep: noSleep, polls: 2 });
+    expect(same.outcome).toBe("unchanged");
+    expect(fly.count("updateMachine")).toBe(0);
+
+    process.env.FLY_ESTATE_IMAGE = "registry.fly.io/force-field-sandbox:v2";
+    const green = healthFetch({
+      "/ledger/health": { signing: "on", require_signing: true, appendable: true, key_fingerprint: "fs", build_sha: "abc" },
+      "/gateway/health": { enforce: true, tool_check: true },
+      "/attest/health": { signing: "on" },
+    });
+    const up = await upgradeEstateImage((await getEstate(user.id))!, fly as any, { fetchImpl: green, sleep: noSleep, polls: 2 });
+    expect(up.outcome).toBe("upgraded");
+    expect(fly.count("updateMachine")).toBe(1);
+    const cfg = fly.machines[up.estate.app][0].config;
+    expect(cfg.image).toBe("registry.fly.io/force-field-sandbox:v2");
+    expect(cfg.env.FIELD_LEDGER_REQUIRE_SIGNING).toBe("1");
+    expect(cfg.env.FORCE_GATEWAY_ENFORCE).toBe("1");
+    const cur = (await getEstate(user.id))!;
+    expect(cur.image).toBe("registry.fly.io/force-field-sandbox:v2");
+    expect(cur.health).toMatchObject({ ok: true });
+    expect(cur.upgrade_failed_image).toBeNull();
+    expect(cur.status).toBe("ready");
+    expect(cur.log.at(-1)!.note).toMatch(/armed and healthy on registry.fly.io\/force-field-sandbox:v2/);
+
+    // Forced re-apply of the same image goes through the machine update again.
+    const forced = await upgradeEstateImage(cur, fly as any, { fetchImpl: green, sleep: noSleep, polls: 2, force: true });
+    expect(forced.outcome).toBe("upgraded");
+    expect(fly.count("updateMachine")).toBe(2);
+  });
+
+  it("image upgrade: a posture that never arms, or a foreign signing key, flags the estate and halts that image — status stays ready, nothing is destroyed", async () => {
+    const fly = new FakeFly();
+    await readyEstate(fly);
+    process.env.FLY_ESTATE_IMAGE = "registry.fly.io/force-field-sandbox:v3";
+    const noSleep = async () => {};
+    const never = healthFetch({ "/ledger/health": { signing: "off" } });
+    const r = await upgradeEstateImage((await getEstate(user.id))!, fly as any, { fetchImpl: never, sleep: noSleep, polls: 3, sleepMs: 1000 });
+    expect(r.outcome).toBe("failed");
+    let cur = (await getEstate(user.id))!;
+    expect(cur.status).toBe("ready");
+    expect(cur.upgrade_failed_image).toBe("registry.fly.io/force-field-sandbox:v3");
+    expect(cur.image).toBe("registry.fly.io/force-field-sandbox:test");
+    expect(cur.health).toMatchObject({ ok: false });
+    expect(cur.health!.note).toMatch(/did not report the armed posture within 3 s/);
+    expect(fly.count("stopMachine")).toBe(0);
+
+    const foreignKey = healthFetch({
+      "/ledger/health": { signing: "on", require_signing: true, appendable: true, key_fingerprint: "not-fs" },
+      "/gateway/health": { enforce: true, tool_check: true },
+      "/attest/health": { signing: "on" },
+    });
+    cur.upgrade_failed_image = null;
+    await saveEstate(cur);
+    const r2 = await upgradeEstateImage(cur, fly as any, { fetchImpl: foreignKey, sleep: noSleep, polls: 2 });
+    expect(r2.outcome).toBe("failed");
+    cur = (await getEstate(user.id))!;
+    expect(cur.health!.note).toMatch(/not the one generated at bootstrap/);
+    expect(cur.upgrade_failed_image).toBe("registry.fly.io/force-field-sandbox:v3");
+    expect(cur.image).toBe("registry.fly.io/force-field-sandbox:test");
   });
 });

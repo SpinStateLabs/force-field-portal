@@ -4,3 +4,7 @@
 
 [functions]
   directory = "netlify/functions"
+
+[build.environment]
+  # @netlify/blobs 11 requires Node >= 22.12 (its engines field); pin the build and function runtime.
+  NODE_VERSION = "22"

@@ -35,9 +35,39 @@ export async function alreadyProcessed(eventId: string): Promise<boolean> {
   return Boolean(await store.get("stripe_events/" + eventId, { type: "json" }));
 }
 
+/**
+ * Claim a Stripe event id BEFORE handling it, with a create-only write: false
+ * when another delivery of the same event already claimed or processed it, so
+ * two concurrent deliveries can never both apply. A claim that fails to handle
+ * is released again (releaseEvent) so Stripe's retry can succeed.
+ */
+export const STALE_CLAIM_MS = 10 * 60 * 1000;
+
+export async function claimEvent(eventId: string, type: string, now: Date = new Date()): Promise<boolean> {
+  const store = await portalStore();
+  const key = "stripe_events/" + eventId;
+  const claim = { type, status: "processing", claimed_at: now.toISOString() };
+  if (await store.setJSONIfNew(key, claim)) return true;
+  // A claim left "processing" for longer than any webhook invocation can live (the
+  // function died, or the release after a failure itself failed) must not strand the
+  // event: Stripe's retry takes it over. A "done" record is never taken over.
+  const existing = (await store.get(key, { type: "json" })) as { status?: string; claimed_at?: string } | null;
+  if (existing?.status === "processing" && existing.claimed_at && now.getTime() - new Date(existing.claimed_at).getTime() > STALE_CLAIM_MS) {
+    console.warn("billing webhook: taking over a stale claim for event", eventId, "claimed at", existing.claimed_at);
+    await store.setJSON(key, claim);
+    return true;
+  }
+  return false;
+}
+
+export async function releaseEvent(eventId: string): Promise<void> {
+  const store = await portalStore();
+  await store.delete("stripe_events/" + eventId);
+}
+
 export async function markProcessed(eventId: string, type: string, now: Date = new Date()): Promise<void> {
   const store = await portalStore();
-  await store.setJSON("stripe_events/" + eventId, { type, processed_at: now.toISOString() });
+  await store.setJSON("stripe_events/" + eventId, { type, status: "done", processed_at: now.toISOString() });
 }
 
 /** Resolve the portal user for a subscription: metadata.user_id first, then the customer pointer. */

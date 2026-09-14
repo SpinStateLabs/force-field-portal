@@ -45,6 +45,9 @@ export type RosterRow = {
   max_spend_usd: number | null;
 };
 
+/** The scheduled tick's last look at a ready estate: never a trigger for destruction, only a flag. */
+export type EstateHealth = { ok: boolean; checked_at: string; note: string };
+
 export type Estate = {
   user_id: string;
   app: string;
@@ -66,6 +69,11 @@ export type Estate = {
   self_agents: Record<string, { provisioned_at: string }>;
   posture: { enforce: boolean; tool_check: boolean; require_signing: boolean; attest_signing: boolean } | null;
   anthropic_key_set_at: string | null;
+  /** The engine image the machine runs (recorded at launch/upgrade; null on records older than this field). */
+  image: string | null;
+  health: EstateHealth | null;
+  /** An image that failed to reach the armed posture on this estate; the tick will not retry it. */
+  upgrade_failed_image: string | null;
   suspended_from: EstateStatus | null;
   lease_until: string | null;
   worker_until: string | null;
@@ -176,6 +184,9 @@ export async function queueEstate(user: User, now: Date = new Date()): Promise<E
     self_agents: {},
     posture: null,
     anthropic_key_set_at: null,
+    image: null,
+    health: null,
+    upgrade_failed_image: null,
     suspended_from: null,
     lease_until: null,
     worker_until: null,
@@ -185,7 +196,12 @@ export async function queueEstate(user: User, now: Date = new Date()): Promise<E
     suspended_at: null,
   };
   logEstate(e, "queue", configured ? "queued for automatic provisioning" : "queued; provisioning is not configured on this deployment (manual)", now);
-  await saveEstate(e, now);
+  // Create-only write: a concurrent creator (a webhook redelivery, a racing
+  // driver) cannot overwrite a record that already exists — its record wins.
+  const store = await portalStore();
+  if (!(await store.setJSONIfNew(estateKey(user.id), e))) {
+    return (await getEstate(user.id))!;
+  }
   return e;
 }
 
@@ -256,6 +272,14 @@ crow = customer_row(c)
 if crow: rows.append(crow)
 write_roster(rows)
 out["roster_rows"] = len(rows); out["customer_row"] = bool(crow)
+import csv
+owners_path = os.environ.get("FIELD_LIFECYCLE_ROSTER") or "/data/owners.csv"
+owners_tmp = owners_path + ".tmp"
+with open(owners_tmp, "w", newline="") as f:
+    w = csv.writer(f, quoting=csv.QUOTE_ALL)
+    w.writerow(["owner", "aliases"]); w.writerow([${JSON.stringify(SELF_OWNER)}, ""]); w.writerow([c["grantor"], ""])
+os.chmod(owners_tmp, 0o600); os.replace(owners_tmp, owners_path)
+out["owners"] = 2
 print(json.dumps(out))
 `;
 
@@ -428,9 +452,15 @@ export async function advanceEstate(
         if (!e.machine_id) {
           const machines = await fly.listMachines(e.app);
           const existing = machines.find((m) => m.name === "estate");
-          e.machine_id = existing ? existing.id : (await fly.createMachine(e.app, "estate", estateMachineConfig(cfg, e.volume_id!, "boot", signer))).id;
+          if (existing) {
+            e.machine_id = existing.id;
+            e.image = existing.config?.image ?? cfg.image;
+          } else {
+            e.machine_id = (await fly.createMachine(e.app, "estate", estateMachineConfig(cfg, e.volume_id!, "boot", signer))).id;
+            e.image = cfg.image;
+          }
         }
-        nextStep(e, `machine ${e.machine_id} launched from ${cfg.image} (observer posture for bootstrap)`, now);
+        nextStep(e, `machine ${e.machine_id} launched from ${e.image ?? cfg.image} (observer posture for bootstrap)`, now);
         break;
       }
       case "wait_boot": {
@@ -487,15 +517,7 @@ export async function advanceEstate(
         break;
       }
       case "wait_armed": {
-        const [led, gw, at] = await Promise.all([
-          healthJson(origin, "/ledger/health", fetchImpl),
-          healthJson(origin, "/gateway/health", fetchImpl),
-          healthJson(origin, "/attest/health", fetchImpl),
-        ]);
-        const armed =
-          led?.signing === "on" && led?.require_signing === true && led?.appendable === true &&
-          gw?.enforce === true && gw?.tool_check === true &&
-          at?.signing === "on";
+        const { armed, ledger: led } = await armedPosture(origin, fetchImpl);
         if (armed) {
           const fp = String(led?.key_fingerprint ?? "");
           if (e.fingerprints["ledger-sign"] && fp && fp !== e.fingerprints["ledger-sign"]) {
@@ -624,6 +646,150 @@ export async function updateEstateRoster(e: Estate, fly: FlyClient, input: any, 
   return e;
 }
 
+// --- posture, health, image upgrades ------------------------------------------------
+
+/** The armed Phase F posture as the public health endpoints report it. */
+export async function armedPosture(origin: string, fetchImpl: FetchLike = fetch): Promise<{ armed: boolean; ledger: any; gateway: any; attest: any }> {
+  const [ledger, gateway, attest] = await Promise.all([
+    healthJson(origin, "/ledger/health", fetchImpl),
+    healthJson(origin, "/gateway/health", fetchImpl),
+    healthJson(origin, "/attest/health", fetchImpl),
+  ]);
+  const armed =
+    ledger?.signing === "on" && ledger?.require_signing === true && ledger?.appendable === true &&
+    gateway?.enforce === true && gateway?.tool_check === true &&
+    attest?.signing === "on";
+  return { armed, ledger, gateway, attest };
+}
+
+/**
+ * The Fly app behind a ready estate is gone (destroyed outside the portal).
+ * The record becomes an honest error at step create_app with every
+ * machine-bound fact cleared: the gateway answers 503 estate_error instead of
+ * dialing a dead origin, and a retry provisions a FRESH estate (new keys, an
+ * empty ledger) rather than pretending the old one is back.
+ */
+export function markEstateAppMissing(e: Estate, now: Date = new Date()): void {
+  logEstate(e, "health", `Fly app ${e.app} no longer exists (destroyed outside the portal); retry provisions a fresh estate (new keys, empty ledger)`, now);
+  e.status = "error";
+  e.error = "estate_app_missing: the Fly app behind this estate is gone";
+  e.step = "create_app";
+  e.attempts = 0;
+  e.polls = 0;
+  e.volume_id = null;
+  e.machine_id = null;
+  e.ips = [];
+  e.url = null;
+  e.posture = null;
+  e.self_agents = {};
+  e.fingerprints = {};
+  e.public_keys = {};
+  e.ready_at = null;
+  e.image = null;
+  e.anthropic_key_set_at = null;
+  e.upgrade_failed_image = null;
+  e.health = { ok: false, checked_at: now.toISOString(), note: "Fly app missing" };
+}
+
+export type HealthOutcome = "ok" | "unhealthy" | "app_missing" | "skipped";
+
+/**
+ * One health look at a ready estate (the scheduled tick's job): the app must
+ * still exist on Fly and the ledger must answer healthy and appendable. Flags
+ * only — nothing here stops, restarts or destroys anything.
+ */
+export async function checkEstateHealth(
+  e: Estate,
+  fly: FlyClient,
+  opts: { now?: Date; fetchImpl?: FetchLike } = {},
+): Promise<HealthOutcome> {
+  const now = opts.now ?? new Date();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  if (e.status !== "ready") return "skipped";
+  const app = await fly.getApp(e.app, 8000);
+  if (!app) {
+    markEstateAppMissing(e, now);
+    await saveEstate(e, now);
+    return "app_missing";
+  }
+  if (!e.image && e.machine_id) {
+    const m = await fly.getMachine(e.app, e.machine_id, 8000);
+    if (m?.config?.image) e.image = m.config.image;
+  }
+  const led = await healthJson(e.url ?? estateOrigin(e.app), "/ledger/health", fetchImpl);
+  const ok = Boolean(led && led.ok !== false && led.appendable === true);
+  const note = ok
+    ? "ledger healthy and appendable"
+    : led
+      ? `ledger answered but appendable=${String(led.appendable)}, ok=${String(led.ok)}`
+      : "ledger health did not answer 200 within 6 s";
+  const was = e.health?.ok;
+  if (was !== undefined && was !== ok) logEstate(e, "health", ok ? "healthy again: " + note : "PROBLEM: " + note, now);
+  else if (was === undefined && !ok) logEstate(e, "health", "PROBLEM: " + note, now);
+  e.health = { ok, checked_at: now.toISOString(), note };
+  await saveEstate(e, now);
+  return ok ? "ok" : "unhealthy";
+}
+
+export type UpgradeOutcome = "upgraded" | "unchanged" | "failed";
+
+/**
+ * Move a ready estate's machine to the configured estate image (FLY_ESTATE_IMAGE,
+ * a label that was smoked and deployed on the sandbox first) in the armed
+ * posture, then wait until the public origin reports that posture with the
+ * SAME ledger signing key. A failure flags the estate (health + the image that
+ * failed, which the tick will not retry) and never destroys anything. `force`
+ * re-applies the current image (an operator's "re-apply config").
+ */
+export async function upgradeEstateImage(
+  e: Estate,
+  fly: FlyClient,
+  opts: { now?: Date; fetchImpl?: FetchLike; force?: boolean; polls?: number; sleepMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<{ estate: Estate; outcome: UpgradeOutcome }> {
+  const now = opts.now ?? new Date();
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const cfg = flyConfig();
+  if (!cfg) throw new EstateError(501, "provisioning_not_configured", "Provisioning is not configured on this deployment.");
+  if (e.status !== "ready" || !e.machine_id || !e.volume_id) throw new EstateError(409, "estate_not_ready", "Only a ready estate can change image.");
+  const target = cfg.image;
+  if (!opts.force && e.image === target) return { estate: e, outcome: "unchanged" };
+  const from = e.image ?? "unknown";
+  logEstate(e, "upgrade", `updating the machine image ${from} -> ${target}${opts.force ? " (forced re-apply)" : ""}; armed posture re-verified afterwards`, now);
+  await saveEstate(e, now);
+  await fly.updateMachine(e.app, e.machine_id, estateMachineConfig(cfg, e.volume_id, "armed", attestSigner(e.grantor)));
+
+  const origin = e.url ?? estateOrigin(e.app);
+  const polls = opts.polls ?? 60;
+  const sleepMs = opts.sleepMs ?? 5000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const fail = async (note: string): Promise<{ estate: Estate; outcome: UpgradeOutcome }> => {
+    const at = new Date();
+    e.upgrade_failed_image = target;
+    e.health = { ok: false, checked_at: at.toISOString(), note };
+    logEstate(e, "upgrade", `FAILED: ${note}; rollout of ${target} halted for this estate`, at);
+    await saveEstate(e, at);
+    return { estate: e, outcome: "failed" };
+  };
+  for (let i = 0; i < polls; i++) {
+    const p = await armedPosture(origin, fetchImpl);
+    if (p.armed) {
+      const fp = String(p.ledger?.key_fingerprint ?? "");
+      if (e.fingerprints["ledger-sign"] && fp && fp !== e.fingerprints["ledger-sign"]) {
+        return fail(`after the image update the ledger reports signing key ${fp.slice(0, 12)}…, not the one generated at bootstrap`);
+      }
+      const at = new Date();
+      e.image = target;
+      e.upgrade_failed_image = null;
+      e.health = { ok: true, checked_at: at.toISOString(), note: `armed on ${target}` };
+      logEstate(e, "upgrade", `armed and healthy on ${target} (ledger build ${p.ledger?.build_sha ?? "?"})`, at);
+      await saveEstate(e, at);
+      return { estate: e, outcome: "upgraded" };
+    }
+    await sleep(sleepMs);
+  }
+  return fail(`the estate did not report the armed posture within ${Math.round((polls * sleepMs) / 1000)} s of the image update`);
+}
+
 // --- gateway routing ---------------------------------------------------------------
 
 export type Route =
@@ -669,6 +835,9 @@ export function publicEstate(e: Estate, now: Date = new Date()): Record<string, 
     self_agents: Object.keys(e.self_agents),
     posture: e.posture,
     anthropic_key_set_at: e.anthropic_key_set_at,
+    image: e.image ?? null,
+    health: e.health ?? null,
+    upgrade_failed_image: e.upgrade_failed_image ?? null,
     created_at: e.created_at,
     updated_at: e.updated_at,
     ready_at: e.ready_at,

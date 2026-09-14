@@ -110,6 +110,14 @@ describe("gateway", () => {
           accept: "application/json",
           cookie: "ff_session=must-not-cross",
           authorization: "Bearer must-not-cross",
+          // The agent's identity for the estate's enforcing gateway: must pass through.
+          "x-field-agent-id": "invoice-bot",
+          "x-field-token": "tok-123",
+          "x-field-action": "draft invoice",
+          "x-force-preset": "audit",
+          // A caller may not impersonate the perimeter or another tenant.
+          "x-field-auth": "spoofed-secret",
+          "x-ff-tenant": "someone-else",
         },
       }),
       ctx
@@ -123,9 +131,14 @@ describe("gateway", () => {
     expect(calls[0].url).toBe("http://estate.test/registry/agents?limit=5");
     expect(calls[0].headers.get("x-field-auth")).toBe("shared-secret-test");
     expect(calls[0].headers.get("x-ff-tenant")).toBe(user.id);
+    expect(calls[0].headers.get("x-field-agent-id")).toBe("invoice-bot");
+    expect(calls[0].headers.get("x-field-token")).toBe("tok-123");
+    expect(calls[0].headers.get("x-field-action")).toBe("draft invoice");
+    expect(calls[0].headers.get("x-force-preset")).toBe("audit");
     // Client credentials must never cross the proxy boundary.
     expect(calls[0].headers.get("cookie")).toBeNull();
     expect(calls[0].headers.get("authorization")).toBeNull();
+    expect(calls[0].headers.get("x-api-key")).toBeNull();
   });
 
   it("429 with Retry-After once the minute budget is exhausted", async () => {

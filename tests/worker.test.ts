@@ -18,6 +18,8 @@ class LoopFly {
   volumes: any[] = [];
   machines: any[] = [];
   async createApp(name: string) { this.calls.push("createApp"); if (this.failures > 0) { this.failures -= 1; throw new Error("boom"); } }
+  appExists = true;
+  async getApp(name: string) { this.calls.push("getApp"); return this.appExists ? { name } : null; }
   async listIps() { return [{ address: "1.1.1.1", type: "shared_v4" }, { address: "::1", type: "v6" }]; }
   async allocateIp() { throw new Error("not expected"); }
   async listVolumes() { return this.volumes; }
@@ -161,6 +163,126 @@ describe("worker and tick functions", () => {
     expect((await ok.json()).last).toBe("no_estate");
     const internal = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", headers: { "x-ff-internal": internalToken(user.id) }, body: JSON.stringify({ user_id: user.id, action: "renew" }) }), ctx);
     expect(internal.status).toBe(200);
+  });
+
+  async function readyEstate(u: User, image: string) {
+    const e = await queueEstate(u);
+    e.status = "ready";
+    e.step = "done";
+    e.machine_id = "m_1";
+    e.volume_id = "vol_1";
+    e.url = "https://" + e.app + ".fly.dev";
+    e.image = image;
+    e.fingerprints = { "ledger-sign": "fs" };
+    e.self_agents = Object.fromEntries(SELF_AGENTS.map((a) => [a.id, { provisioned_at: new Date().toISOString() }]));
+    await saveEstate(e);
+    return e;
+  }
+
+  /** Routes the tick's real fetches: Fly Machines API (app / machine reads), estate health, worker kicks. */
+  function routedFetch(o: { appExists: boolean; ledger: any | null; kicks: any[] }) {
+    return (async (url: any, init?: any) => {
+      const u = String(url);
+      if (u.startsWith("https://api.machines.dev/v1/apps/")) {
+        if (u.includes("/machines/")) return new Response(JSON.stringify({ id: "m_1", config: { image: "registry.fly.io/x:y" } }), { status: 200 });
+        return o.appExists ? new Response(JSON.stringify({ name: "app" }), { status: 200 }) : new Response("", { status: 404 });
+      }
+      if (u.endsWith("/ledger/health")) return o.ledger ? new Response(JSON.stringify(o.ledger), { status: 200 }) : new Response("", { status: 503 });
+      o.kicks.push(JSON.parse(init.body));
+      return new Response("", { status: 202 });
+    }) as any;
+  }
+
+  it("tick: health-checks ready estates (ok / missing app), kicks ONE image upgrade per tick, and halts while an estate failed on that image", async () => {
+    process.env.URL = "https://portal.test";
+    const a = await readyEstate(user, "registry.fly.io/x:y");
+    const realFetch = globalThis.fetch;
+    const kicks: any[] = [];
+    try {
+      // On the configured image and healthy: nothing to do but record the health look.
+      globalThis.fetch = routedFetch({ appExists: true, ledger: { ok: true, appendable: true }, kicks });
+      let body = await (await tickHandler(new Request("http://portal.test/tick", { method: "POST", body: "{}" }))).json();
+      expect(body.outcomes).toEqual({ health_ok: 1 });
+      expect(body.drifted).toBe(0);
+      expect((await getEstate(a.user_id))!.health).toMatchObject({ ok: true });
+
+      // The estate image moved on: one upgrade kick.
+      process.env.FLY_ESTATE_IMAGE = "registry.fly.io/x:z";
+      body = await (await tickHandler(new Request("http://portal.test/tick", { method: "POST", body: "{}" }))).json();
+      expect(body.drifted).toBe(1);
+      expect(body.outcomes).toEqual({ health_ok: 1, upgrade_kicked: 1 });
+      expect(kicks).toEqual([{ user_id: a.user_id, action: "upgrade" }]);
+
+      // Another estate failed on that image: the rollout halts (no kick for anyone).
+      const other = await createUser("failed@example.com", "sufficiently-long-pass");
+      const b = await readyEstate(other, "registry.fly.io/x:y");
+      b.upgrade_failed_image = "registry.fly.io/x:z";
+      await saveEstate(b);
+      kicks.length = 0;
+      body = await (await tickHandler(new Request("http://portal.test/tick", { method: "POST", body: "{}" }))).json();
+      expect(body.outcomes).toEqual({ health_ok: 2, upgrade_halted: 1 });
+      expect(kicks).toEqual([]);
+
+      // The Fly app behind a ready estate is gone: an honest error, never a kick.
+      globalThis.fetch = routedFetch({ appExists: false, ledger: null, kicks });
+      body = await (await tickHandler(new Request("http://portal.test/tick", { method: "POST", body: "{}" }))).json();
+      expect(body.outcomes).toEqual({ health_app_missing: 2 });
+      expect((await getEstate(a.user_id))!.status).toBe("error");
+      expect((await getEstate(a.user_id))!.error).toMatch(/estate_app_missing/);
+      expect(kicks).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.FLY_ESTATE_IMAGE = FLY_ENV.FLY_ESTATE_IMAGE;
+    }
+  });
+
+  it("renew holds the worker lease too: refused beside a live worker, lease cleared afterwards; the tick does not kick an upgrade for an estate whose renewal is due", async () => {
+    const fly = new LoopFly();
+    const e = await readyEstate(user, "registry.fly.io/x:y");
+    e.self_agents = Object.fromEntries(SELF_AGENTS.map((a) => [a.id, { provisioned_at: new Date(Date.now() - 26 * 86400_000).toISOString() }]));
+    e.worker_until = new Date(Date.now() + 600_000).toISOString();
+    await saveEstate(e);
+    fly.machines.push({ id: "m_1", name: "estate", config: { image: e.image } });
+    expect((await runWorker(user.id, "renew", fly as any, { fetchImpl: greenHealth })).last).toBe("worker_active");
+    e.worker_until = null;
+    await saveEstate(e);
+    const r = await runWorker(user.id, "renew", fly as any, { fetchImpl: greenHealth });
+    expect(r.last).toBe("renewed");
+    expect((await getEstate(user.id))!.worker_until).toBeNull();
+
+    // Due for renewal AND on an old image: the tick kicks the renewal only.
+    process.env.URL = "https://portal.test";
+    process.env.FLY_ESTATE_IMAGE = "registry.fly.io/x:z";
+    const due = (await getEstate(user.id))!;
+    due.self_agents = Object.fromEntries(SELF_AGENTS.map((a) => [a.id, { provisioned_at: new Date(Date.now() - 26 * 86400_000).toISOString() }]));
+    await saveEstate(due);
+    const kicks: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = routedFetch({ appExists: true, ledger: { ok: true, appendable: true }, kicks });
+    try {
+      const body = await (await tickHandler(new Request("http://portal.test/tick", { method: "POST", body: "{}" }))).json();
+      expect(kicks).toEqual([{ user_id: user.id, action: "renew" }]);
+      expect(body.outcomes).toEqual({ renew_kicked: 1, health_ok: 1 });
+      expect(body.drifted).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.FLY_ESTATE_IMAGE = FLY_ENV.FLY_ESTATE_IMAGE;
+    }
+  });
+
+  it("worker upgrade action: updates the machine to the configured image and re-verifies the posture; a no-op on the current image", async () => {
+    const fly = new LoopFly();
+    const e = await readyEstate(user, "registry.fly.io/x:old");
+    fly.machines.push({ id: "m_1", name: "estate", config: { image: e.image } });
+    const r = await runWorker(user.id, "upgrade", fly as any, { fetchImpl: greenHealth, sleep: async () => {} });
+    expect(r.last).toBe("upgraded");
+    expect(fly.calls).toContain("updateMachine");
+    expect(fly.machines[0].config.image).toBe("registry.fly.io/x:y");
+    const cur = (await getEstate(user.id))!;
+    expect(cur.image).toBe("registry.fly.io/x:y");
+    expect(cur.worker_until).toBeNull();
+    const again = await runWorker(user.id, "upgrade", fly as any, { fetchImpl: greenHealth, sleep: async () => {} });
+    expect(again.last).toBe("unchanged");
   });
 
   it("tick: kicks the worker for idle provisioning estates and renewals, skips estates with a live worker", async () => {

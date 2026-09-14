@@ -17,6 +17,12 @@ export class MemStore implements KV {
     this.map.set(key, structuredClone(value));
   }
 
+  async setJSONIfNew(key: string, value: any): Promise<boolean> {
+    if (this.map.has(key)) return false;
+    this.map.set(key, structuredClone(value));
+    return true;
+  }
+
   async delete(key: string): Promise<void> {
     this.map.delete(key);
   }

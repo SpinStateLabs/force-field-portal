@@ -147,8 +147,8 @@ export class FlyClient {
 
   // --- apps ---------------------------------------------------------------
 
-  async getApp(name: string): Promise<any | null> {
-    const r = await this.rest("GET", `/apps/${encodeURIComponent(name)}`);
+  async getApp(name: string, timeoutMs = 20000): Promise<any | null> {
+    const r = await this.rest("GET", `/apps/${encodeURIComponent(name)}`, undefined, timeoutMs);
     if (r.status === 404) return null;
     if (r.status < 200 || r.status >= 300) throw new FlyError(r.status, `Fly GET app ${name} answered HTTP ${r.status}`, r.body);
     return r.body;
@@ -253,8 +253,8 @@ export class FlyClient {
     return body as Machine;
   }
 
-  async getMachine(app: string, id: string): Promise<Machine | null> {
-    const r = await this.rest("GET", `/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}`);
+  async getMachine(app: string, id: string, timeoutMs = 20000): Promise<Machine | null> {
+    const r = await this.rest("GET", `/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}`, undefined, timeoutMs);
     if (r.status === 404) return null;
     if (r.status < 200 || r.status >= 300) throw new FlyError(r.status, `Fly GET machine ${id} answered HTTP ${r.status}`, r.body);
     return r.body as Machine;
@@ -325,6 +325,9 @@ export function estateMachineConfig(
     FIELD_LEDGER_RETENTION_DAYS: "2555",
     FIELD_LEDGER_ANCHOR_KEY: "/data/keys/ledger-anchor.pem",
     FIELD_DOA_ROSTER: "/data/doa-roster.yaml",
+    // Owner roster for the lifecycle sweep (orphan findings escalate only; the
+    // scheduler never auto-kills). Bootstrap writes it; the first tick is a day out.
+    FIELD_LIFECYCLE_ROSTER: "/data/owners.csv",
     FORCE_GATEWAY_SENTINEL_TIMEOUT: "30",
   };
   if (posture === "armed") {

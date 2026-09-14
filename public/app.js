@@ -443,6 +443,9 @@ function renderEstate(e, configured) {
   const fps = e.fingerprints || {};
   for (const name of Object.keys(fps)) addFact("Public key " + name, String(fps[name]));
   if (Array.isArray(e.self_agents) && e.self_agents.length) addFact("Platform self-agents", e.self_agents.join(", ") + " (30-day tokens, renewed automatically after 25 days with a brief restart)");
+  if (e.image) addFact("Engine image", String(e.image));
+  if (e.health) addFact("Health", (e.health.ok ? "ok" : "PROBLEM") + " — " + String(e.health.note || "") + " (checked " + fmtTime(e.health.checked_at) + ")");
+  if (e.upgrade_failed_image) addFact("Image upgrade", "FAILED for " + String(e.upgrade_failed_image) + " — the rollout to this estate is halted; Spin State Labs investigates before retrying");
   addFact("Anthropic key", e.anthropic_key_set_at ? "placed " + fmtTime(e.anthropic_key_set_at) : "not placed — POST /gateway/v1/messages answers 502 until it is");
   if (e.ready_at) addFact("Ready since", fmtTime(e.ready_at));
   show(facts);

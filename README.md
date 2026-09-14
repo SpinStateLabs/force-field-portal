@@ -1,7 +1,7 @@
 # Force-Field Portal
 
 Public SaaS portal for the **Force Field Protocol** governance platform by Spin State Labs
-("Force-Field as a Service", v0.2.0).
+("Force-Field as a Service", v0.2.1).
 
 The portal provides user registration/login, API key management, tiered rate limits, Stripe
 billing for the paid tiers, automatic provisioning of one dedicated engine estate per paying
@@ -58,7 +58,7 @@ netlify dev
 | `STRIPE_PRICE_SOVEREIGN` | For billing | Stripe Price id billed for Sovereign. |
 | `FLY_API_TOKEN` | For provisioning | Org-scoped Fly token (apps, volumes, machines, IPs, secrets). Provisioning is configured only when this, `FLY_ORG_SLUG`, `FLY_ESTATE_IMAGE` and `ESTATE_SECRET_MASTER` are all set. |
 | `FLY_ORG_SLUG` | For provisioning | The Fly organization that owns customer estates. |
-| `FLY_ESTATE_IMAGE` | For provisioning | The estate image to launch, e.g. `registry.fly.io/force-field-sandbox:<label>` — a label that was smoked and deployed on the sandbox first. |
+| `FLY_ESTATE_IMAGE` | For provisioning | The estate image to launch, e.g. `registry.fly.io/force-field-sandbox:<label>` — a label that was smoked and deployed on the sandbox first. Changing it (and redeploying) starts the rollout to existing estates, one per tick. |
 | `ESTATE_SECRET_MASTER` | For provisioning | HMAC master; each estate's `FIELD_SHARED_SECRET` is derived from it and the app name, so no per-estate secret is stored. Changing it orphans existing estates. |
 | `FLY_REGION` | No | Region for new estates (default `yyz`). |
 | `FLY_ESTATE_MEMORY_MB` | No | Machine memory (default 2048; the thirteen services need it). |
@@ -92,7 +92,10 @@ Browser ── static pages (public/, Netlify CDN)
    ├─ Stripe ── signed webhook ──> /api/billing/webhook  (the only writer of paid tiers)
    │
    ├─ schedule */2 ──> estate-tick ──kick──> estate-worker (BACKGROUND fn, ≤15 min: drives one
-   │                                          estate's steps; Fly Machines + GraphQL APIs)
+   │                    │                     estate's steps, renews self-agent tokens, or moves
+   │                    │                     an estate to a new engine image; Fly APIs)
+   │                    └── health look at every ready estate (app present? ledger appendable?)
+   │                        → a flag on the record and the dashboard; never a stop or a destroy
    │
    └─ x-api-key ───────> Netlify Function: /api/v1/*  (gateway)
                                             │  auth + rate limit, then route:
@@ -101,9 +104,11 @@ Browser ── static pages (public/, Netlify CDN)
                           Engine estate: single origin, path-prefixed services, guarded by x-field-auth
 ```
 
-The gateway forwards method, body, `content-type`, and `accept`; adds `x-field-auth` (the
-estate's secret) and `x-ff-tenant` (the caller's user id); and never forwards client cookies
-or `Authorization` headers. A provisioning estate answers `503 estate_provisioning`, a
+The gateway forwards method, body, `content-type`, `accept`, and the caller's `x-field-*` /
+`x-force-*` headers (the agent identity an enforcing estate gateway requires on `/v1/messages`:
+`x-field-agent-id`, `x-field-token`, `x-field-action`, `x-force-preset`); it sets `x-field-auth`
+(the estate's secret) and `x-ff-tenant` (the caller's user id) itself, overriding any caller value,
+and never forwards client cookies, `Authorization` or `x-api-key`. A provisioning estate answers `503 estate_provisioning`, a
 suspended one `403 estate_suspended`, a failed one `503 estate_error` — never a silent fall
 back to the sandbox, which would mix a tenant's data.
 
@@ -156,8 +161,30 @@ fingerprint must equal the one generated at bootstrap) → `ready`.
   validated with the estate's own roster loader before it replaces the live file.
 - Public keys and fingerprints are kept on the estate record and shown on the dashboard, so
   the customer can verify their ledger and attestation packs off-box.
+- Bootstrap also writes the lifecycle owner roster (`/data/owners.csv`: the platform self-agent
+  owner and the account email) and the machine env names it (`FIELD_LIFECYCLE_ROSTER`), so the
+  estate's daily lifecycle sweep runs (orphan findings escalate only; the scheduler never
+  auto-kills).
+- **Health.** Every two minutes the tick looks at each ready estate: the Fly app must still exist
+  and `/ledger/health` must answer healthy and appendable. The result is a flag on the record and
+  the dashboard (`health`), with a log line on every transition. Nothing is stopped, restarted or
+  destroyed by the tick. A transient Fly error is counted as `threw`, never as a missing app. The
+  look runs in parallel with short timeouts and only while the tick has budget left (a skipped
+  look is counted as `health_skipped_budget`), so a slow estate cannot push the scheduled function
+  past its 30 s limit. An app that was destroyed outside the portal turns the record into an
+  honest `error` at step `create_app` with every machine-bound fact cleared (the gateway answers
+  `503 estate_error`, not a dead origin); a retry provisions a fresh estate — new keys, empty ledger.
+- **Engine image rollout.** The image an estate runs is recorded at launch. When `FLY_ESTATE_IMAGE`
+  moves to a new label (one smoked and deployed on the public sandbox first), the tick kicks ONE
+  estate per run through the worker's `upgrade` action: a machine update to the new image in the
+  armed posture, then the posture and the ledger's signing-key fingerprint are re-verified through
+  the public origin. Success records the new image; failure flags the estate (`health`,
+  `upgrade_failed_image`) and halts the rollout for every estate while any estate has failed on
+  that image. Nothing is destroyed, and the halt is lifted only by a new label.
 - A subscription that stops granting suspends the estate: the machine is stopped, the volume
   is kept. Reactivation starts it again. Destroying an estate is a manual operator action.
+- Customer-facing usage (register an agent, mint a token, a governed LLM call, an attestation
+  pack, off-box verification): [docs/estate-quickstart.md](docs/estate-quickstart.md).
 - Unconfigured: estate mutations answer `501 provisioning_not_configured`; a paid account is
   recorded as `pending_manual` (provisioned by hand) and its keys keep reaching the sandbox.
 
@@ -169,7 +196,7 @@ verified, not what a mature SaaS would do.
 - **Billing and provisioning are configuration-gated.** With no `STRIPE_*` / `FLY_*` variables
   the portal sells nothing and provisions nothing, and says so (`501` codes, `/api/health`
   flags, the landing note).
-- **Verification status (2026-09-14).** Stripe and Fly paths are covered by 91 unit tests with
+- **Verification status (2026-09-14).** Stripe and Fly paths are covered by 102 unit tests with
   the HTTP layer mocked (request shapes, signature scheme, state transitions, idempotency,
   routing), plus the in-machine roster script executed for real under a local Python against a
   stub of the estate's roster validator.
@@ -183,19 +210,28 @@ verified, not what a mature SaaS would do.
     with a wrong one, gateway 401 without an agent identity, and a roster rewrite; the app was
     destroyed at the end (`fly apps list` shows no `ff-est-*`). Two defects found by the run were
     fixed in the library (shared-IPv4 payload shape; an empty customer roster row invalidating
-    the fail-closed roster), never in the assertions. **Caveats:** the rehearsal ran with an
+    the fail-closed roster), never in the assertions. A fourth run the same evening
+    (`ff-est-f2e76e3f`, ready in 58 s, 87 s end to end) verified the additions: the lifecycle owner
+    roster armed on a customer estate (`/lifecycle/health` `roster_configured: true`), the tick's
+    health look answering `ok`, and a forced image re-apply (a real machine update, 27 s to the
+    armed posture with the same ledger signing key). **Caveat:** every rehearsal ran with an
     operator's own Fly token, so the org-scoped token placed in Netlify is verified only when the
-    first real estate provisions through the site; and customer estates do not set
-    `FIELD_LIFECYCLE_ROSTER`, so the lifecycle sweep is a recorded skip there (`/lifecycle/health`
-    reports `roster_configured: false`) — one switch short of the sandbox's Phase F posture.
+    first real estate provisions through the site.
   - **Billing: no live Stripe checkout has been performed** (test mode or live). Until an
     operator runs one, treat "sells the paid tiers" as Declared, not Enforced.
 - **Rate limiting is approximate.** Counters use read-increment-write blob storage with
   last-write-wins semantics, so concurrent requests can under-count. Limits are Declared,
   not Enforced hard caps.
-- **Provisioning concurrency is best-effort**: a worker lease and a 25 s per-step lease on the
-  blob (no compare-and-swap), a deterministic app name per user (racing writers agree on one
-  app), and every step checks Fly for what already exists before creating anything.
+- **Provisioning concurrency is best-effort**: the estate record is CREATED with a create-only
+  write (`@netlify/blobs` `onlyIfNew`: two racing creators end up with one record), the Stripe
+  webhook CLAIMS each event id the same way before handling it (a concurrent delivery is a no-op;
+  a failed handling releases the claim so the retry applies; a claim still "processing" after
+  10 minutes — the function died, or the release itself failed — is taken over by the retry and
+  logged, so no event is stranded), the worker lease is held by every worker action (advance,
+  renew, upgrade never interleave on one estate), a deterministic app name per user,
+  and every step checks Fly for what already exists before creating anything. The per-step lease
+  and the worker lease are still plain read-then-write on the record (no compare-and-swap on
+  UPDATES), so two drivers can, rarely, run the same idempotent step twice.
 - **Self-agent tokens expire after 30 days.** The three platform identities minted in each
   estate are renewed automatically by the scheduled tick after 25 days (one machine restart);
   if the tick is not running (previews, a paused site) they lapse and the gateway's own calls

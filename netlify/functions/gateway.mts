@@ -79,9 +79,17 @@ export default async (req: Request, _context: Context): Promise<Response> => {
   if (contentType) headers.set("content-type", contentType);
   const accept = req.headers.get("accept");
   if (accept) headers.set("accept", accept);
+  // The caller's agent identity and preset headers (x-field-agent-id, x-field-token,
+  // x-field-action, x-force-preset, ...) pass through: an enforcing estate gateway
+  // refuses /v1/messages without them. The perimeter secret (x-field-auth) and the
+  // tenant header are always the portal's own values, never the caller's.
+  for (const [name, value] of req.headers) {
+    const n = name.toLowerCase();
+    if ((n.startsWith("x-field-") || n.startsWith("x-force-")) && n !== "x-field-auth") headers.set(n, value);
+  }
   if (sharedSecret) headers.set("x-field-auth", sharedSecret);
   headers.set("x-ff-tenant", user.id);
-  // Deliberately NOT forwarded: cookie, authorization, x-api-key.
+  // Deliberately NOT forwarded: cookie, authorization, x-api-key, a caller's x-field-auth or x-ff-tenant.
 
   const method = req.method.toUpperCase();
   let body: ArrayBuffer | undefined;

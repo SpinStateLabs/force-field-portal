@@ -119,6 +119,7 @@ describe("estate machine config", () => {
     expect(boot.env!.FIELD_SENTINEL_MODE).toBe("enforce");
     expect(boot.env!.FIELD_LEDGER_ANCHOR_KEY).toBe("/data/keys/ledger-anchor.pem");
     expect(boot.env!.FIELD_DOA_ROSTER).toBe("/data/doa-roster.yaml");
+    expect(boot.env!.FIELD_LIFECYCLE_ROSTER).toBe("/data/owners.csv");
     expect(boot.env!.FORCE_GATEWAY_ENFORCE).toBeUndefined();
     expect(boot.env!.FIELD_LEDGER_SIGN_KEY).toBeUndefined();
     expect(boot.mounts).toEqual([{ volume: "vol_1", path: "/data", name: "ff_data" }]);

@@ -8,6 +8,12 @@
 export type KV = {
   get(key: string, opts?: { type?: "json" | "text" }): Promise<any>;
   setJSON(key: string, value: any): Promise<void>;
+  /**
+   * Create-only write (the store's own compare-and-set, `onlyIfNew` in
+   * @netlify/blobs >= 10): true when the key was written, false when it
+   * already existed — the caller then knows another writer got there first.
+   */
+  setJSONIfNew(key: string, value: any): Promise<boolean>;
   delete(key: string): Promise<void>;
   list(opts?: { prefix?: string }): Promise<{ blobs: { key: string }[] }>;
 };
@@ -40,8 +46,14 @@ export function env(name: string): string | undefined {
 export async function portalStore(): Promise<KV> {
   if (testStore) return testStore;
   const { getStore, getDeployStore } = await import("@netlify/blobs");
-  if (env("CONTEXT") === "production") {
-    return getStore("portal") as unknown as KV;
-  }
-  return getDeployStore("portal") as unknown as KV;
+  const store = env("CONTEXT") === "production" ? getStore("portal") : getDeployStore("portal");
+  return {
+    get: (key, opts) => store.get(key, opts as any),
+    setJSON: async (key, value) => {
+      await store.setJSON(key, value);
+    },
+    setJSONIfNew: async (key, value) => (await store.setJSON(key, value, { onlyIfNew: true })).modified,
+    delete: (key) => store.delete(key),
+    list: (opts) => store.list(opts),
+  };
 }

@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { freshStore } from "../helpers";
 import { createUser } from "../../src/lib/users";
 import { FlyClient, flyConfig } from "../../src/lib/fly";
-import { advanceEstate, estateSecret, getEstate, healthJson, queueEstate, updateEstateRoster } from "../../src/lib/estates";
+import { advanceEstate, checkEstateHealth, estateSecret, getEstate, healthJson, queueEstate, updateEstateRoster, upgradeEstateImage } from "../../src/lib/estates";
 
 const LIVE = process.env.FF_LIVE_FLY === "1";
 
@@ -89,10 +89,16 @@ describe.skipIf(!LIVE)("LIVE Fly provisioning (creates and destroys a real ff-es
       expect(present.FIELD_GATEWAY_SELF_TOKEN).toBe(true);
       expect(present.FIELD_CROSSWALK_SELF_TOKEN).toBe(true);
 
-      // Recorded, not asserted: the lifecycle sweep roster is a known gap on
-      // customer estates (the sandbox has FIELD_LIFECYCLE_ROSTER; this config does not).
+      // The lifecycle sweep roster (owners.csv written at bootstrap, FIELD_LIFECYCLE_ROSTER
+      // in the machine env) must be armed: the last Phase F switch customer estates lacked.
       const lc = await healthJson(e.url!, "/lifecycle/health");
       console.log(`[${stamp()}] lifecycle ${JSON.stringify({ roster_configured: lc?.roster_configured, every: lc?.every })}`);
+      expect(lc?.roster_configured).toBe(true);
+
+      // The tick's health look at a ready estate.
+      const h = await checkEstateHealth((await getEstate(user.id))!, fly);
+      console.log(`[${stamp()}] health check outcome ${h}: ${JSON.stringify((await getEstate(user.id))!.health)}`);
+      expect(h).toBe("ok");
 
       // The derived shared secret is the one the estate holds: an authenticated
       // sentinel check works with it and 401s without it.
@@ -119,6 +125,17 @@ describe.skipIf(!LIVE)("LIVE Fly provisioning (creates and destroys a real ff-es
       const rostered = await updateEstateRoster((await getEstate(user.id))!, fly, { allowed_scope: ["live.test"], max_ttl_days: 1, max_spend_usd: null });
       console.log(`[${stamp()}] roster rewritten: ${JSON.stringify(rostered.roster)}`);
       expect(rostered.roster.allowed_scope).toEqual(["live.test"]);
+
+      // The image-upgrade path, forced onto the same image: a real machine update in the
+      // armed posture, then the posture and the SAME signing key re-verified off-box.
+      const t0 = Date.now();
+      const up = await upgradeEstateImage((await getEstate(user.id))!, fly, { force: true, polls: 40, sleepMs: 5000 });
+      console.log(`[${stamp()}] forced image re-apply: ${up.outcome} in ${Math.round((Date.now() - t0) / 1000)} s; image ${up.estate.image}; health ${JSON.stringify(up.estate.health)}`);
+      expect(up.outcome).toBe("upgraded");
+      expect(up.estate.image).toBe(process.env.FLY_ESTATE_IMAGE);
+      expect(up.estate.upgrade_failed_image).toBeNull();
+      const ledAfter = await healthJson(e.url!, "/ledger/health");
+      expect(ledAfter?.key_fingerprint).toBe(e.fingerprints["ledger-sign"]);
     } finally {
       const e = await getEstate(user.id);
       if (e && process.env.FF_LIVE_KEEP !== "1") {

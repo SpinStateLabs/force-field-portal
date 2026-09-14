@@ -4,7 +4,7 @@ import { freshStore } from "./helpers";
 import { createUser, getUserById, type User } from "../src/lib/users";
 import { issueSession, sessionCookie } from "../src/lib/session";
 import { signPayload, stripeConfig } from "../src/lib/stripe";
-import { alreadyProcessed, handleStripeEvent } from "../src/lib/billing";
+import { STALE_CLAIM_MS, alreadyProcessed, claimEvent, handleStripeEvent, markProcessed } from "../src/lib/billing";
 import { getEstate, queueEstate, saveEstate } from "../src/lib/estates";
 
 const ctx = {} as any;
@@ -182,6 +182,45 @@ describe("billing endpoints", () => {
 
     const again = await handler(new Request("http://portal.test/api/billing/webhook", { method: "POST", headers: { "stripe-signature": sig }, body: raw }), ctx);
     expect(await again.json()).toEqual({ received: true, duplicate: true });
+  });
+
+  it("webhook: the event id is CLAIMED before handling (create-only write); a failed handling releases it so Stripe's retry applies", async () => {
+    Object.assign(process.env, STRIPE_ENV);
+    const raw = JSON.stringify({ id: "evt_77", type: "checkout.session.completed", data: { object: { mode: "subscription", subscription: "sub_1", customer: "cus_1", client_reference_id: user.id } } });
+    const sig = signPayload(raw, "whsec_test", Math.floor(Date.now() / 1000));
+    const post = () => handler(new Request("http://portal.test/api/billing/webhook", { method: "POST", headers: { "stripe-signature": sig }, body: raw }), ctx);
+    const realFetch = globalThis.fetch;
+    let stripeUp = false;
+    globalThis.fetch = (async (url: any) =>
+      stripeUp && String(url).endsWith("/v1/subscriptions/sub_1") ? jsonResponse(200, sub()) : jsonResponse(500, { error: { message: "stripe down" } })) as any;
+    try {
+      const failed = await post();
+      expect(failed.status).toBe(500);
+      expect(await alreadyProcessed("evt_77")).toBe(false); // the claim was released
+      expect((await getUserById(user.id))!.tier).toBe("sandbox");
+
+      stripeUp = true;
+      const retry = await post();
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ received: true, handled: true });
+      expect((await getUserById(user.id))!.tier).toBe("operator");
+      expect(await alreadyProcessed("evt_77")).toBe(true);
+
+      const dup = await post();
+      expect(await dup.json()).toEqual({ received: true, duplicate: true });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("webhook claims: a fresh 'processing' claim blocks; a stale one (older than 10 min) is taken over; a 'done' record never is", async () => {
+    const fresh = new Date();
+    expect(await claimEvent("evt_a", "t", fresh)).toBe(true);
+    expect(await claimEvent("evt_a", "t", new Date(fresh.getTime() + 60_000))).toBe(false);
+    expect(await claimEvent("evt_a", "t", new Date(fresh.getTime() + STALE_CLAIM_MS + 1000))).toBe(true);
+    await markProcessed("evt_a", "t", fresh);
+    expect(await claimEvent("evt_a", "t", new Date(fresh.getTime() + 24 * 3600_000))).toBe(false);
+    expect(await alreadyProcessed("evt_a")).toBe(true);
   });
 
   it("checkout: validates the tier, refuses a second subscription, and returns Stripe's URL", async () => {

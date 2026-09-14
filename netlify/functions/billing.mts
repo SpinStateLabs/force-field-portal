@@ -16,7 +16,7 @@ import {
   stripeConfig,
   verifyStripeSignature,
 } from "../../src/lib/stripe";
-import { alreadyProcessed, handleStripeEvent, markProcessed } from "../../src/lib/billing";
+import { claimEvent, handleStripeEvent, markProcessed, releaseEvent } from "../../src/lib/billing";
 import { flyClientOrNull } from "../../src/lib/fly";
 
 function json(status: number, body: unknown): Response {
@@ -64,7 +64,8 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     if (typeof event?.id !== "string" || typeof event?.type !== "string") {
       return err(400, "bad_event", "Webhook body is not a Stripe event.");
     }
-    if (await alreadyProcessed(event.id)) {
+    // Create-only claim: a redelivery (or a concurrent delivery) of the same event id is a no-op.
+    if (!(await claimEvent(event.id, event.type))) {
       return json(200, { received: true, duplicate: true });
     }
     try {
@@ -72,7 +73,10 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       await markProcessed(event.id, event.type);
       return json(200, { received: true, ...outcome });
     } catch (e: any) {
-      // A 5xx makes Stripe retry; the event is not marked processed.
+      // A 5xx makes Stripe retry; release the claim so that retry can apply the event.
+      await releaseEvent(event.id).catch((re: any) =>
+        console.error("billing webhook: RELEASE of the claim failed for", event.id, "- the retry takes it over after 10 min:", re?.message ?? re),
+      );
       console.error("billing webhook: handling failed for", event.type, "-", e?.message ?? e);
       return err(500, "webhook_failed", "The event could not be applied; Stripe will retry.");
     }

@@ -38,7 +38,7 @@ export default async (req: Request, _context: Context): Promise<Response> => {
   const fly = flyClientOrNull();
   if (!fly) return json(501, { error: { code: "provisioning_not_configured", message: "Provisioning is not configured on this deployment." } });
 
-  const action: WorkerAction = body?.action === "renew" ? "renew" : "advance";
+  const action: WorkerAction = body?.action === "renew" ? "renew" : body?.action === "upgrade" ? "upgrade" : "advance";
   const result = await runWorker(userId, action, fly);
   console.log(`estate-worker: action ${action}, iterations ${result.iterations}, last ${result.last}, status ${result.status}`);
   return json(200, result);

@@ -9,7 +9,7 @@ import { env } from "../../src/lib/store";
 import { stripeConfig } from "../../src/lib/stripe";
 import { flyConfig } from "../../src/lib/fly";
 
-export const PORTAL_VERSION = "0.2.0";
+export const PORTAL_VERSION = "0.2.1";
 
 export default async (req: Request, _context: Context): Promise<Response> => {
   if (req.method !== "GET") {

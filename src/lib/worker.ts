@@ -15,14 +15,14 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "./store";
-import { advanceEstate, getEstate, saveEstate, workerActive, type AdvanceOutcome } from "./estates";
+import { advanceEstate, getEstate, saveEstate, upgradeEstateImage, workerActive, type AdvanceOutcome } from "./estates";
 import { renewSelfAgents, renewalDue } from "./renewal";
 import type { FlyClient } from "./fly";
 import type { FetchLike } from "./fly";
 
 export const WORKER_BUDGET_MS = 12 * 60 * 1000;
 export const WORKER_PATH = "/.netlify/functions/estate-worker-background";
-export type WorkerAction = "advance" | "renew";
+export type WorkerAction = "advance" | "renew" | "upgrade";
 
 export function internalToken(userId: string, secret: string | undefined = env("SESSION_SECRET")): string {
   if (!secret) throw new Error("SESSION_SECRET is not set");
@@ -53,7 +53,11 @@ export async function kickWorker(userId: string, action: WorkerAction = "advance
   }
 }
 
-export type WorkerResult = { iterations: number; last: AdvanceOutcome | "no_estate" | "worker_active" | "renewed" | "not_due" | "renew_failed"; status: string | null };
+export type WorkerResult = {
+  iterations: number;
+  last: AdvanceOutcome | "no_estate" | "worker_active" | "renewed" | "not_due" | "renew_failed" | "upgraded" | "unchanged" | "upgrade_failed";
+  status: string | null;
+};
 
 export async function runWorker(
   userId: string,
@@ -67,20 +71,45 @@ export async function runWorker(
   const e = await getEstate(userId);
   if (!e) return { iterations: 0, last: "no_estate", status: null };
 
+  if (action === "renew" && !renewalDue(e)) return { iterations: 0, last: "not_due", status: e.status };
+
+  // Every action holds the worker lease: renew and upgrade both update the
+  // machine of a READY estate and must never interleave (a renew's restart
+  // could otherwise re-apply the pre-upgrade config).
+  if (workerActive(e)) return { iterations: 0, last: "worker_active", status: e.status };
+  const started = Date.now();
+  e.worker_until = new Date(started + budgetMs + 60_000).toISOString();
+  await saveEstate(e);
+
   if (action === "renew") {
-    if (!renewalDue(e)) return { iterations: 0, last: "not_due", status: e.status };
     try {
       await renewSelfAgents(e, fly);
       return { iterations: 1, last: "renewed", status: e.status };
     } catch {
       return { iterations: 1, last: "renew_failed", status: e.status };
+    } finally {
+      const cur = await getEstate(userId);
+      if (cur) {
+        cur.worker_until = null;
+        await saveEstate(cur);
+      }
     }
   }
 
-  if (workerActive(e)) return { iterations: 0, last: "worker_active", status: e.status };
-  const started = Date.now();
-  e.worker_until = new Date(started + budgetMs + 60_000).toISOString();
-  await saveEstate(e);
+  if (action === "upgrade") {
+    try {
+      const r = await upgradeEstateImage(e, fly, { fetchImpl: opts.fetchImpl, sleep: opts.sleep, sleepMs });
+      return { iterations: 1, last: r.outcome === "failed" ? "upgrade_failed" : r.outcome, status: r.estate.status };
+    } catch {
+      return { iterations: 1, last: "upgrade_failed", status: e.status };
+    } finally {
+      const cur = await getEstate(userId);
+      if (cur) {
+        cur.worker_until = null;
+        await saveEstate(cur);
+      }
+    }
+  }
 
   let iterations = 0;
   let last: AdvanceOutcome = "idle";
