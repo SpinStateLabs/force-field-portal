@@ -191,10 +191,43 @@ export async function queueEstate(user: User, now: Date = new Date()): Promise<E
 
 // --- in-machine scripts -----------------------------------------------------------
 
-/** argv[1] = JSON {grantor, allowed_scope, max_ttl_days, max_spend_usd}. Prints one JSON line. */
-export const BOOTSTRAP_PY = `
-import base64, hashlib, json, os, subprocess, sys, importlib.resources as r
+/**
+ * Shared by the bootstrap and roster scripts. The estate's DOA roster is
+ * FAIL-CLOSED: a row with no scopes (or any other invalid row) makes the whole
+ * file invalid and the delegation service then refuses EVERY mint with 503 —
+ * including the platform self-agents (the live rehearsal of 2026-09-14 failed
+ * at `lifecycle provision` for exactly this: the customer's default row had an
+ * empty scope list). So: a customer row is written only once it has scopes,
+ * and the file is validated with the estate's own loader before it replaces
+ * the live roster. The roster path is the one the delegation service reads
+ * (FIELD_DOA_ROSTER, inherited by exec; /data/doa-roster.yaml on an estate).
+ */
+export const ROSTER_LIB_PY = `
+import json, os, sys
 import yaml
+from delegation_authority.doa import load_roster
+ROSTER = os.environ.get("FIELD_DOA_ROSTER") or "/data/doa-roster.yaml"
+def customer_row(c):
+    scopes = [s for s in (c.get("allowed_scope") or []) if s]
+    if not scopes: return None
+    row = {"grantor": c["grantor"], "allowed_scope": scopes, "max_ttl_days": int(c["max_ttl_days"]), "active": True}
+    if c.get("max_spend_usd") is not None: row["max_spend_usd"] = float(c["max_spend_usd"])
+    return row
+def write_roster(rows):
+    tmp = os.path.join(os.path.dirname(ROSTER) or ".", ".doa-roster.tmp")
+    with open(tmp, "w") as f: yaml.safe_dump({"grantors": rows}, f, sort_keys=False, allow_unicode=True)
+    os.chmod(tmp, 0o600)
+    try:
+        load_roster(tmp)
+    except Exception as e:
+        os.unlink(tmp)
+        print(json.dumps({"error": "roster rejected by the estate's validator, live roster untouched: %s" % str(e)[:300]})); sys.exit(1)
+    os.replace(tmp, ROSTER)
+`;
+
+/** argv[1] = JSON {grantor, allowed_scope, max_ttl_days, max_spend_usd}. Prints one JSON line. */
+export const BOOTSTRAP_PY = ROSTER_LIB_PY + `
+import base64, hashlib, subprocess, importlib.resources as r
 os.makedirs("/data/keys", exist_ok=True); os.makedirs("/data/manifests", exist_ok=True)
 out = {"keys": {}, "manifests": []}
 for name in ("ledger-anchor", "ledger-sign", "attest-sign"):
@@ -219,38 +252,34 @@ for mid, _ in pairs:
         if s not in scopes: scopes.append(s)
 c = json.loads(sys.argv[1])
 rows = [{"grantor": self_name, "allowed_scope": scopes, "max_ttl_days": 30, "active": True}]
-crow = {"grantor": c["grantor"], "allowed_scope": list(c["allowed_scope"]), "max_ttl_days": int(c["max_ttl_days"]), "active": True}
-if c.get("max_spend_usd") is not None: crow["max_spend_usd"] = float(c["max_spend_usd"])
-rows.append(crow)
-tmp = "/data/.doa-roster.tmp"
-with open(tmp, "w") as f: yaml.safe_dump({"grantors": rows}, f, sort_keys=False, allow_unicode=True)
-os.chmod(tmp, 0o600); os.replace(tmp, "/data/doa-roster.yaml")
-out["roster_rows"] = len(rows)
+crow = customer_row(c)
+if crow: rows.append(crow)
+write_roster(rows)
+out["roster_rows"] = len(rows); out["customer_row"] = bool(crow)
 print(json.dumps(out))
 `;
 
 /** argv[1] = JSON row (grantor, allowed_scope, max_ttl_days, max_spend_usd): replace that grantor's row, keep the rest. */
-export const ROSTER_PY = `
-import json, os, sys
-import yaml
-c = json.loads(sys.argv[1]); path = "/data/doa-roster.yaml"
-doc = yaml.safe_load(open(path)) if os.path.exists(path) else {"grantors": []}
-rows = [x for x in (doc.get("grantors") or []) if x.get("grantor") != c["grantor"]]
-crow = {"grantor": c["grantor"], "allowed_scope": list(c["allowed_scope"]), "max_ttl_days": int(c["max_ttl_days"]), "active": True}
-if c.get("max_spend_usd") is not None: crow["max_spend_usd"] = float(c["max_spend_usd"])
-rows.append(crow)
-tmp = "/data/.doa-roster.tmp"
-with open(tmp, "w") as f: yaml.safe_dump({"grantors": rows}, f, sort_keys=False, allow_unicode=True)
-os.chmod(tmp, 0o600); os.replace(tmp, path)
-print(json.dumps({"roster_rows": len(rows)}))
+export const ROSTER_PY = ROSTER_LIB_PY + `
+c = json.loads(sys.argv[1])
+doc = yaml.safe_load(open(ROSTER)) if os.path.exists(ROSTER) else {"grantors": []}
+rows = [x for x in ((doc or {}).get("grantors") or []) if x.get("grantor") != c["grantor"]]
+crow = customer_row(c)
+if crow: rows.append(crow)
+write_roster(rows)
+print(json.dumps({"roster_rows": len(rows), "customer_row": bool(crow)}))
 `;
 
-/** $0 = shared secret, $1 = self-agent id, $2 = owner. Prints one JSON line with the token id. */
+/** $0 = shared secret, $1 = self-agent id, $2 = owner. Prints one JSON line with the token id; on failure, the report's steps. */
 export const PROVISION_SH = `
 set -e
 export FIELD_SHARED_SECRET="$0" FIELD_REGISTRY_URL=http://127.0.0.1:8001 FIELD_LEDGER_URL=http://127.0.0.1:8002 FIELD_DELEGATION_URL=http://127.0.0.1:8003 FIELD_GOVERNOR_URL=http://127.0.0.1:8006 FIELD_LIFECYCLE_URL=http://127.0.0.1:8012
 id="$1"; owner="$2"
-lifecycle provision --manifest "/data/manifests/$id.yaml" --owner "$owner" --domain platform --grantor "Founder & CTO, Spin State Labs" --ttl-days 30 --manifest-ref "/data/manifests/$id.yaml" --out "/tmp/prov-$id.json" > "/tmp/prov-$id.out" 2>&1 || { tail -c 600 "/tmp/prov-$id.out"; exit 1; }
+lifecycle provision --manifest "/data/manifests/$id.yaml" --owner "$owner" --domain platform --grantor "Founder & CTO, Spin State Labs" --ttl-days 30 --manifest-ref "/data/manifests/$id.yaml" --out "/tmp/prov-$id.json" > "/tmp/prov-$id.out" 2>&1 || {
+  tail -c 300 "/tmp/prov-$id.out" || true
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('steps:', [[s['step'], s['outcome'], str(s.get('detail') or '')[:200]] for s in d.get('steps', [])])" "/tmp/prov-$id.json" 2>/dev/null || true
+  exit 1
+}
 python3 -c "import json,sys; d=json.load(open('/tmp/prov-'+sys.argv[1]+'.json')); print(json.dumps({'token_id': d['token_id'], 'ok': d.get('ok'), 'steps': [[s['step'], s['outcome']] for s in d.get('steps', [])]}))" "$id"
 rm -f "/tmp/prov-$id.json"
 `;
@@ -432,7 +461,7 @@ export async function advanceEstate(
           e.public_keys[name] = String(k.pub ?? "");
           e.fingerprints[name] = String(k.fingerprint ?? "");
         }
-        nextStep(e, `keys ${Object.keys(out.keys ?? {}).join(", ")}; manifests ${(out.manifests ?? []).length}; roster rows ${out.roster_rows}`, now);
+        nextStep(e, `keys ${Object.keys(out.keys ?? {}).join(", ")}; manifests ${(out.manifests ?? []).length}; roster rows ${out.roster_rows} (customer row ${out.customer_row ? "present" : "omitted until it has scopes"})`, now);
         break;
       }
       case "provision_sentinel":
@@ -576,8 +605,17 @@ export async function updateEstateRoster(e: Estate, fly: FlyClient, input: any, 
   if (e.status === "ready") {
     const r = await fly.exec(e.app, e.machine_id!, ["python3", "-c", ROSTER_PY, JSON.stringify({ grantor: e.grantor, ...row })], 20);
     const out = lastJsonLine(r.stdout);
-    if (r.exit_code !== 0 || !out) throw new EstateError(502, "roster_failed", `roster rewrite rc=${r.exit_code}: ${redactSecret((r.stdout + r.stderr).slice(-300), estateSecret(e.app))}`);
-    logEstate(e, "roster", `roster row for ${e.grantor} rewritten (${row.allowed_scope.length} scopes, ttl ${row.max_ttl_days} d)`, now);
+    if (r.exit_code !== 0 || !out || out.error) {
+      throw new EstateError(502, "roster_failed", `roster rewrite rc=${r.exit_code}: ${redactSecret(String(out?.error ?? (r.stdout + r.stderr).slice(-300)), estateSecret(e.app))}`);
+    }
+    logEstate(
+      e,
+      "roster",
+      out.customer_row
+        ? `roster row for ${e.grantor} rewritten (${row.allowed_scope.length} scopes, ttl ${row.max_ttl_days} d); ${out.roster_rows} rows`
+        : `roster row for ${e.grantor} removed: no scopes, so nothing can be minted under that grantor until scopes are added; ${out.roster_rows} rows`,
+      now,
+    );
   } else {
     logEstate(e, "roster", `roster row stored; applied at bootstrap (estate is ${e.status})`, now);
   }

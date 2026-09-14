@@ -72,6 +72,28 @@ describe.skipIf(!LIVE)("LIVE Fly provisioning (creates and destroys a real ff-es
       expect(at?.signing).toBe("on");
       expect(at?.key_fingerprint).toBe(e.fingerprints["attest-sign"]);
 
+      // The staged secrets (shared secret + the three self-agent token ids) must
+      // have reached the ARMED machine: health payloads do not expose them, so
+      // ask the machine itself — presence only, never a value.
+      const envProbe = await fly.exec(
+        e.app,
+        e.machine_id!,
+        ["python3", "-c", "import os, json; print(json.dumps({k: bool(os.environ.get(k)) for k in ['FIELD_SHARED_SECRET', 'FIELD_SENTINEL_SELF_TOKEN', 'FIELD_GATEWAY_SELF_TOKEN', 'FIELD_CROSSWALK_SELF_TOKEN', 'FIELD_LEDGER_REQUIRE_SIGNING', 'FORCE_GATEWAY_ENFORCE']}))"],
+        20,
+      );
+      const present: Record<string, boolean> = JSON.parse(envProbe.stdout.trim().split(/\r?\n/).pop() || "{}");
+      console.log(`[${stamp()}] armed machine env presence (rc ${envProbe.exit_code}): ${JSON.stringify(present)}`);
+      expect(envProbe.exit_code).toBe(0);
+      expect(present.FIELD_SHARED_SECRET).toBe(true);
+      expect(present.FIELD_SENTINEL_SELF_TOKEN).toBe(true);
+      expect(present.FIELD_GATEWAY_SELF_TOKEN).toBe(true);
+      expect(present.FIELD_CROSSWALK_SELF_TOKEN).toBe(true);
+
+      // Recorded, not asserted: the lifecycle sweep roster is a known gap on
+      // customer estates (the sandbox has FIELD_LIFECYCLE_ROSTER; this config does not).
+      const lc = await healthJson(e.url!, "/lifecycle/health");
+      console.log(`[${stamp()}] lifecycle ${JSON.stringify({ roster_configured: lc?.roster_configured, every: lc?.every })}`);
+
       // The derived shared secret is the one the estate holds: an authenticated
       // sentinel check works with it and 401s without it.
       const secret = estateSecret(e.app);

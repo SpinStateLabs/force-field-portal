@@ -34,7 +34,9 @@ const BOOTSTRAP_OUT = {
     "attest-sign": { pub: "-----BEGIN PUBLIC KEY-----\nT\n-----END PUBLIC KEY-----\n", fingerprint: "ft" },
   },
   manifests: ["conformance-sentinel", "force-gateway", "compliance-crosswalk"],
-  roster_rows: 2,
+  // A new account has no scopes yet, so bootstrap writes the platform row only.
+  roster_rows: 1,
+  customer_row: false,
 };
 
 /** In-memory stand-in for FlyClient; records every call. */
@@ -49,7 +51,11 @@ class FakeFly {
   execs: string[][] = [];
   execHandler: (cmd: string[]) => { exit_code: number; stdout: string; stderr: string } = (cmd) => {
     if (cmd[0] === "python3" && cmd[2] === BOOTSTRAP_PY) return { exit_code: 0, stdout: "private key: never\n" + JSON.stringify(BOOTSTRAP_OUT) + "\n", stderr: "" };
-    if (cmd[0] === "python3" && cmd[2] === ROSTER_PY) return { exit_code: 0, stdout: JSON.stringify({ roster_rows: 2 }) + "\n", stderr: "" };
+    if (cmd[0] === "python3" && cmd[2] === ROSTER_PY) {
+      const row = JSON.parse(cmd[3]);
+      const present = Array.isArray(row.allowed_scope) && row.allowed_scope.length > 0;
+      return { exit_code: 0, stdout: JSON.stringify({ roster_rows: present ? 2 : 1, customer_row: present }) + "\n", stderr: "" };
+    }
     if (cmd[0] === "sh" && cmd[2] === PROVISION_SH) return { exit_code: 0, stdout: "provision ok\n" + JSON.stringify({ token_id: "tok-" + cmd[4], ok: true, steps: [] }) + "\n", stderr: "" };
     return { exit_code: 127, stdout: "", stderr: "unknown command" };
   };
@@ -362,6 +368,20 @@ describe("dedicated estates", () => {
     expect(fly.count("exec")).toBe(1);
     expect(JSON.parse(fly.execs[0][3])).toEqual({ grantor: "owner@example.com", allowed_scope: ["a"], max_ttl_days: 30, max_spend_usd: null });
     expect(live.roster.allowed_scope).toEqual(["a"]);
+    expect(live.log.at(-1)!.note).toMatch(/rewritten .*2 rows/);
+
+    // No scopes: the row is removed (an empty scope list would invalidate the whole roster) and the log says so.
+    const cleared = await updateEstateRoster((await getEstate(user.id))!, fly as any, { allowed_scope: [], max_ttl_days: 30, max_spend_usd: null });
+    expect(cleared.roster.allowed_scope).toEqual([]);
+    expect(cleared.log.at(-1)!.note).toMatch(/removed: no scopes/);
+
+    // The estate's validator rejected the file: nothing is stored, the error names the cause.
+    fly.execHandler = () => ({ exit_code: 1, stdout: JSON.stringify({ error: "roster rejected by the estate's validator, live roster untouched: max_ttl_days" }) + "\n", stderr: "" });
+    await expect(updateEstateRoster((await getEstate(user.id))!, fly as any, { allowed_scope: ["b"], max_ttl_days: 5, max_spend_usd: null })).rejects.toMatchObject({
+      code: "roster_failed",
+      message: expect.stringContaining("rejected by the estate's validator"),
+    });
+    expect((await getEstate(user.id))!.roster.allowed_scope).toEqual([]);
   });
 
   it("validates roster rows and Anthropic keys", () => {
@@ -369,7 +389,7 @@ describe("dedicated estates", () => {
     expect(() => validateRoster({ allowed_scope: [], max_ttl_days: 0 })).toThrow(/max_ttl_days/);
     expect(() => validateRoster({ allowed_scope: [], max_ttl_days: 366 })).toThrow(/max_ttl_days/);
     expect(() => validateRoster({ allowed_scope: ["ok"], max_ttl_days: 30, max_spend_usd: -1 })).toThrow(/max_spend_usd/);
-    expect(() => validateRoster({ allowed_scope: ["bad "], max_ttl_days: 30 })).toThrow(/printable/);
+    expect(() => validateRoster({ allowed_scope: ["bad\u0000"], max_ttl_days: 30 })).toThrow(/printable/);
     expect(validateRoster({ allowed_scope: ["ok"], max_ttl_days: 30, max_spend_usd: "" })).toEqual({ allowed_scope: ["ok"], max_ttl_days: 30, max_spend_usd: null });
     expect(validateAnthropicKey("  sk-ant-api03-" + "a".repeat(40) + " ")).toBe("sk-ant-api03-" + "a".repeat(40));
     expect(() => validateAnthropicKey("sk-live-x")).toThrow(/Anthropic/);

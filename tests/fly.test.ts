@@ -38,18 +38,42 @@ describe("FlyClient request shapes", () => {
   });
 
   it("allocates IPs and sets secrets over GraphQL with the documented inputs", async () => {
+    // Payload shapes as Fly's schema actually answers them (introspected and checked
+    // against the sandbox on 2026-09-14): a SHARED v4 comes back on app.sharedIpAddress
+    // with ipAddress null, and is absent from app.ipAddresses; a dedicated v6 is an
+    // IPAddress node. The first live rehearsal failed on exactly this.
     const f = fakeFetch((url, body) => {
       if (url !== GRAPHQL_API) return undefined;
-      if (String(body.query).includes("allocateIpAddress")) return { status: 200, body: { data: { allocateIpAddress: { ipAddress: { address: "66.1.2.3", type: "shared_v4" } } } } };
-      if (String(body.query).includes("setSecrets")) return { status: 200, body: { data: { setSecrets: { release: { id: "r", version: 2 } } } } };
-      return { status: 200, body: { data: { app: { ipAddresses: { nodes: [{ address: "::1", type: "v6" }] } } } } };
+      const q = String(body.query);
+      if (q.includes("allocateIpAddress")) {
+        if (body.variables?.input?.type === "shared_v4") return { status: 200, body: { data: { allocateIpAddress: { ipAddress: null, app: { sharedIpAddress: "66.1.2.3" } } } } };
+        return { status: 200, body: { data: { allocateIpAddress: { ipAddress: { id: "ip1", address: "2a09::1", type: "v6" }, app: { sharedIpAddress: "66.1.2.3" } } } } };
+      }
+      if (q.includes("setSecrets")) return { status: 200, body: { data: { setSecrets: { release: { id: "r", version: 2 } } } } };
+      return { status: 200, body: { data: { app: { sharedIpAddress: "66.1.2.3", ipAddresses: { nodes: [{ address: "::1", type: "v6" }] } } } } };
     });
     const c = new FlyClient(CFG, f.fetchImpl);
     expect(await c.allocateIp("ff-est-abc", "shared_v4")).toBe("66.1.2.3");
     expect(f.calls[0].body.variables).toEqual({ input: { appId: "ff-est-abc", type: "shared_v4" } });
+    expect(String(f.calls[0].body.query)).toContain("sharedIpAddress");
+    expect(await c.allocateIp("ff-est-abc", "v6")).toBe("2a09::1");
     await c.setSecrets("ff-est-abc", { FIELD_SHARED_SECRET: "s3cret", B: "2" });
-    expect(f.calls[1].body.variables).toEqual({ input: { appId: "ff-est-abc", secrets: [{ key: "FIELD_SHARED_SECRET", value: "s3cret" }, { key: "B", value: "2" }] } });
-    expect(await c.listIps("ff-est-abc")).toEqual([{ address: "::1", type: "v6" }]);
+    expect(f.calls[2].body.variables).toEqual({ input: { appId: "ff-est-abc", secrets: [{ key: "FIELD_SHARED_SECRET", value: "s3cret" }, { key: "B", value: "2" }] } });
+    expect(await c.listIps("ff-est-abc")).toEqual([
+      { address: "66.1.2.3", type: "shared_v4" },
+      { address: "::1", type: "v6" },
+    ]);
+  });
+
+  it("reports no address when a shared v4 allocation answers without one", async () => {
+    const f = fakeFetch(() => ({ status: 200, body: { data: { allocateIpAddress: { ipAddress: null, app: { sharedIpAddress: null } } } } }));
+    await expect(new FlyClient(CFG, f.fetchImpl).allocateIp("ff-est-abc", "shared_v4")).rejects.toMatchObject({ message: expect.stringContaining("returned no address") });
+  });
+
+  it("never passes the app's shared v4 off as the result of a dedicated v6 allocation", async () => {
+    // The shared v4 is already on the app by the time v6 is allocated; a v6 answer with no node is a failure, not that address.
+    const f = fakeFetch(() => ({ status: 200, body: { data: { allocateIpAddress: { ipAddress: null, app: { sharedIpAddress: "66.1.2.3" } } } } }));
+    await expect(new FlyClient(CFG, f.fetchImpl).allocateIp("ff-est-abc", "v6")).rejects.toMatchObject({ message: expect.stringContaining("allocateIpAddress(v6)") });
   });
 
   it("surfaces GraphQL errors as FlyError", async () => {

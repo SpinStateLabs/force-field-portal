@@ -501,7 +501,9 @@ async function submitRoster(ev) {
   btn.disabled = false;
   if (res.status === 200) {
     rosterDirty = false;
-    $("roster-status").textContent = "Saved: " + scopes.length + " scope(s), tokens up to " + ttl + " day(s).";
+    $("roster-status").textContent = scopes.length
+      ? "Saved: " + scopes.length + " scope(s), tokens up to " + ttl + " day(s)."
+      : "Saved with no scopes: your row is left off the estate's roster, so no token can be minted under your name until you add at least one scope.";
   } else if (res.status === 401) {
     showAuthView();
   } else {

@@ -171,20 +171,38 @@ export class FlyClient {
 
   // --- IPs and secrets (GraphQL) -------------------------------------------
 
+  /**
+   * Public IPs of an app. A SHARED v4 is not an IPAddress node in Fly's schema:
+   * it lives on `app.sharedIpAddress` (verified by introspection and against
+   * the sandbox, 2026-09-14), so it is folded in here as type `shared_v4`.
+   */
   async listIps(app: string): Promise<{ address: string; type: string }[]> {
     const data = await this.gql(
-      `query($name: String!) { app(name: $name) { ipAddresses { nodes { address type } } } }`,
+      `query($name: String!) { app(name: $name) { sharedIpAddress ipAddresses { nodes { address type } } } }`,
       { name: app },
     );
-    return (data?.app?.ipAddresses?.nodes ?? []).map((n: any) => ({ address: String(n.address), type: String(n.type) }));
+    const out: { address: string; type: string }[] = [];
+    const shared = String(data?.app?.sharedIpAddress ?? "");
+    if (shared) out.push({ address: shared, type: "shared_v4" });
+    for (const n of data?.app?.ipAddresses?.nodes ?? []) out.push({ address: String(n.address), type: String(n.type) });
+    return out;
   }
 
+  /**
+   * Allocate a public IP. For `shared_v4` the payload's `ipAddress` is null and
+   * the address comes back on `app.sharedIpAddress` (the live rehearsal of
+   * 2026-09-14 failed on exactly this); dedicated v4/v6 come back as `ipAddress`.
+   */
   async allocateIp(app: string, type: "shared_v4" | "v4" | "v6"): Promise<string> {
     const data = await this.gql(
-      `mutation($input: AllocateIPAddressInput!) { allocateIpAddress(input: $input) { ipAddress { id address type } } }`,
+      `mutation($input: AllocateIPAddressInput!) { allocateIpAddress(input: $input) { ipAddress { id address type } app { sharedIpAddress } } }`,
       { input: { appId: app, type } },
     );
-    const address = String(data?.allocateIpAddress?.ipAddress?.address ?? "");
+    const dedicated = String(data?.allocateIpAddress?.ipAddress?.address ?? "");
+    const shared = String(data?.allocateIpAddress?.app?.sharedIpAddress ?? "");
+    // A dedicated allocation must answer with its own node: never substitute the
+    // app's (already present) shared v4 for a missing v6 and call it a success.
+    const address = type === "shared_v4" ? shared || dedicated : dedicated;
     if (!address) throw new FlyError(502, `Fly allocateIpAddress(${type}) for ${app} returned no address`, data);
     return address;
   }

@@ -151,6 +151,9 @@ fingerprint must equal the one generated at bootstrap) → `ready`.
   a Fly secret on their estate and the machine restarts; the portal stores only the time.
 - The customer's DOA roster row (`PUT /api/estate/roster`): allowed scopes, longest token,
   optional spend ceiling; grantor = the account email; rewritten in-machine, read per mint.
+  The estate's roster is fail-closed (an invalid file refuses every mint, the platform's own
+  included), so the row is written only once it has at least one scope, and every rewrite is
+  validated with the estate's own roster loader before it replaces the live file.
 - Public keys and fingerprints are kept on the estate record and shown on the dashboard, so
   the customer can verify their ledger and attestation packs off-box.
 - A subscription that stops granting suspends the estate: the machine is stopped, the volume
@@ -166,11 +169,27 @@ verified, not what a mature SaaS would do.
 - **Billing and provisioning are configuration-gated.** With no `STRIPE_*` / `FLY_*` variables
   the portal sells nothing and provisions nothing, and says so (`501` codes, `/api/health`
   flags, the landing note).
-- **Verification status (2026-09-14).** Stripe and Fly paths are covered by 75 unit tests with
+- **Verification status (2026-09-14).** Stripe and Fly paths are covered by 91 unit tests with
   the HTTP layer mocked (request shapes, signature scheme, state transitions, idempotency,
-  routing). The live provisioning rehearsal (`tests/live/`) exists but **has not yet been run
-  against Fly** from this repo, and no live Stripe checkout has been performed. Until an operator
-  runs both, treat "provisions automatically" as Declared, not Enforced.
+  routing), plus the in-machine roster script executed for real under a local Python against a
+  stub of the estate's roster validator.
+  - **Provisioning: verified live on 2026-09-14 (22:05–22:06Z).** The live rehearsal
+    (`tests/live/provision.live.test.ts`) created `ff-est-17bb5104` in the `personal` org from
+    `registry.fly.io/force-field-sandbox:v1-2-f-pricing-ec47f2a`, drove all thirteen steps to
+    `ready` in 80 s (boot 29 s, bootstrap 3 s, three self-agents 7 s, arm-to-armed 30 s), and
+    verified off-box: ledger `signing: on` + `require_signing` with the bootstrap fingerprint,
+    gateway `enforce` + `tool_check`, attest `signing: on` with its fingerprint, all four staged
+    secrets present in the armed machine, sentinel check 200 with the derived secret and 401
+    with a wrong one, gateway 401 without an agent identity, and a roster rewrite; the app was
+    destroyed at the end (`fly apps list` shows no `ff-est-*`). Two defects found by the run were
+    fixed in the library (shared-IPv4 payload shape; an empty customer roster row invalidating
+    the fail-closed roster), never in the assertions. **Caveats:** the rehearsal ran with an
+    operator's own Fly token, so the org-scoped token placed in Netlify is verified only when the
+    first real estate provisions through the site; and customer estates do not set
+    `FIELD_LIFECYCLE_ROSTER`, so the lifecycle sweep is a recorded skip there (`/lifecycle/health`
+    reports `roster_configured: false`) — one switch short of the sandbox's Phase F posture.
+  - **Billing: no live Stripe checkout has been performed** (test mode or live). Until an
+    operator runs one, treat "sells the paid tiers" as Declared, not Enforced.
 - **Rate limiting is approximate.** Counters use read-increment-write blob storage with
   last-write-wins semantics, so concurrent requests can under-count. Limits are Declared,
   not Enforced hard caps.
