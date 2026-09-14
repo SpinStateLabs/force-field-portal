@@ -18,6 +18,17 @@ export type KeyRef = {
   revoked: boolean;
 };
 
+/** Stripe subscription state mirrored from webhooks (never card data). */
+export type Billing = {
+  customer_id: string;
+  subscription_id: string | null;
+  status: string;
+  price_id: string | null;
+  tier: Tier;
+  current_period_end: string | null;
+  updated_at: string;
+};
+
 export type User = {
   id: string;
   email: string;
@@ -25,6 +36,7 @@ export type User = {
   tier: Tier;
   created_at: string;
   keys: KeyRef[];
+  billing?: Billing | null;
 };
 
 export class BadEmail extends Error {}

@@ -107,10 +107,11 @@
         <p class="tier-price">$49<span class="per">/mo</span></p>
         <ul class="tier-features">
           <li>60 requests/min &middot; 5,000 requests/day</li>
-          <li>Dedicated estate</li>
-          <li>Provisioned manually at launch</li>
+          <li>Dedicated estate: your own governance engine</li>
+          <li>Signed ledger &amp; attestations, gateway enforcement</li>
+          <li>Bring your own Anthropic API key</li>
         </ul>
-        <a class="btn btn-secondary" href="app.html">Talk to us</a>
+        <a class="btn btn-secondary" href="app.html?upgrade=operator" data-upgrade="operator">Talk to us</a>
       </div>
 
       <div class="tier-card">
@@ -118,18 +119,18 @@
         <p class="tier-price">$249<span class="per">/mo</span></p>
         <ul class="tier-features">
           <li>300 requests/min &middot; 50,000 requests/day</li>
-          <li>Dedicated estate</li>
+          <li>Dedicated estate: your own governance engine</li>
+          <li>Signed ledger &amp; attestations, gateway enforcement</li>
           <li>Federation &amp; custom manifests</li>
-          <li>Provisioned manually at launch</li>
         </ul>
-        <a class="btn btn-secondary" href="app.html">Talk to us</a>
+        <a class="btn btn-secondary" href="app.html?upgrade=sovereign" data-upgrade="sovereign">Talk to us</a>
       </div>
 
     </div>
-    <p class="pricing-honest">
-      Honest note: paid checkout is not wired yet, and dedicated estates are provisioned
-      manually in v0. Register on Sandbox and we will follow up &mdash; no instant paid
-      activation is promised.
+    <p class="pricing-honest" id="pricing-honest">
+      Honest note: paid checkout is not enabled on this deployment yet, and dedicated estates
+      are provisioned manually. Register on Sandbox and we will follow up &mdash; no instant
+      paid activation is promised.
     </p>
   </section>
 
@@ -139,5 +140,6 @@
   <p>Spin State Labs &middot; Force Field Protocol</p>
 </footer>
 
+<script src="pricing.js"></script>
 </body>
 </html>

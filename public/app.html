@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Force-Field Portal — Dashboard</title>
-<meta name="description" content="Manage your Force-Field Portal account and API keys.">
+<meta name="description" content="Manage your Force-Field Portal account, plan, dedicated estate and API keys.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -61,6 +61,60 @@
 
     <p class="estate-line">Estate status: <span id="estate-chip" class="chip chip-warn">checking&hellip;</span></p>
 
+    <div class="card panel" id="billing-panel">
+      <h2 class="panel-title">Plan &amp; billing</h2>
+      <p id="billing-summary" class="muted">Loading&hellip;</p>
+      <p id="billing-note" class="hint hidden"></p>
+      <div class="panel-actions">
+        <button id="upgrade-operator" class="btn btn-primary" type="button">Upgrade to Operator ($49/mo)</button>
+        <button id="upgrade-sovereign" class="btn btn-secondary" type="button">Upgrade to Sovereign ($249/mo)</button>
+        <button id="manage-billing" class="btn btn-secondary hidden" type="button">Manage billing</button>
+      </div>
+      <div id="billing-error" class="error-box hidden" role="alert"></div>
+    </div>
+
+    <div class="card panel hidden" id="estate-panel">
+      <h2 class="panel-title">Dedicated estate</h2>
+      <p class="estate-head">Status: <span id="estate-status" class="chip chip-warn">&hellip;</span>
+        <span id="estate-url-wrap" class="hidden">&nbsp;at <a id="estate-url" href="#" target="_blank" rel="noopener"></a></span></p>
+      <p id="estate-note" class="hint"></p>
+      <ol id="estate-steps" class="steps"></ol>
+      <div id="estate-error" class="error-box hidden" role="alert"></div>
+      <div class="panel-actions">
+        <button id="estate-retry" class="btn btn-secondary btn-small hidden" type="button">Retry provisioning</button>
+      </div>
+      <dl id="estate-facts" class="kv hidden"></dl>
+      <details id="estate-log-wrap" class="hidden"><summary>Provisioning log</summary><pre class="code" id="estate-log"></pre></details>
+
+      <div id="estate-config" class="hidden">
+        <h3 class="sub-title">Anthropic API key (bring your own)</h3>
+        <p class="hint">Model calls from your estate use your key. It is placed as a secret on your estate and never stored by
+          the portal; the estate restarts to apply it (about a minute).</p>
+        <form id="anthropic-form" class="new-key-row">
+          <label class="visually-hidden" for="anthropic-key">Anthropic API key</label>
+          <input id="anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-&hellip;" maxlength="240">
+          <button id="anthropic-btn" class="btn btn-primary" type="submit">Place key</button>
+        </form>
+        <p id="anthropic-status" class="muted"></p>
+        <div id="anthropic-error" class="error-box hidden" role="alert"></div>
+
+        <h3 class="sub-title">Delegation roster (your grantor row)</h3>
+        <p class="hint">Mint tokens with <code>granted_by</code> = <code id="roster-grantor"></code>. A mint is refused for any
+          scope not on this list, and the roster widens nothing an agent's manifest does not declare.</p>
+        <form id="roster-form" class="form-grid">
+          <label for="roster-scopes">Allowed scopes (one per line)</label>
+          <textarea id="roster-scopes" rows="5" maxlength="8000"></textarea>
+          <label for="roster-ttl">Longest token (days)</label>
+          <input id="roster-ttl" type="number" min="1" max="365" value="30">
+          <label for="roster-spend">Spend ceiling per token (USD, blank = none)</label>
+          <input id="roster-spend" type="number" min="0" step="0.01">
+          <div><button id="roster-btn" class="btn btn-primary" type="submit">Save roster row</button></div>
+        </form>
+        <p id="roster-status" class="muted"></p>
+        <div id="roster-error" class="error-box hidden" role="alert"></div>
+      </div>
+    </div>
+
     <div class="card panel">
       <h2 class="panel-title">API keys</h2>
       <div class="table-wrap">
@@ -91,8 +145,10 @@
       <p>Send a check to the sentinel through the authenticated gateway:</p>
       <pre class="code"><code id="quickstart-code"></code></pre>
       <p class="hint">
-        Replace <code>ff_live_YOUR_KEY</code> with one of your keys. While no estate is
-        attached, the gateway answers 503 with an honest error instead of a fabricated verdict.
+        Replace <code>ff_live_YOUR_KEY</code> with one of your keys. Sandbox accounts reach the shared
+        sandbox estate; paid accounts reach their own dedicated estate once it is ready. While no estate is
+        attached or yours is still provisioning, the gateway answers 503 with an honest error instead of a
+        fabricated verdict.
       </p>
     </div>
 

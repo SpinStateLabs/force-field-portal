@@ -1,4 +1,4 @@
-// gateway.mts — Force-Field Portal v0.1.0
+// gateway.mts — Force-Field Portal v0.2.0
 // Authenticated proxy from /api/v1/* to the engine estate (ONE reverse-proxy
 // origin fronting the field-platform services). Auth is ONLY the x-api-key
 // header. Responses are buffered — no streaming in v0.
@@ -7,6 +7,7 @@ import type { Context, Config } from "@netlify/functions";
 import { env } from "../../src/lib/store";
 import { lookupKey } from "../../src/lib/keys";
 import { checkRateLimit } from "../../src/lib/ratelimit";
+import { getEstate, resolveRoute } from "../../src/lib/estates";
 
 function err(status: number, code: string, message: string, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify({ error: { code, message } }), {
@@ -44,14 +45,29 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     );
   }
 
-  // --- Estate attachment: be honest when the engine is not publicly hosted yet. ---
-  const estateUrl = env("ESTATE_URL");
-  if (!estateUrl) {
-    return err(
-      503,
-      "estate_not_attached",
-      "The sandbox estate is not attached yet. The portal is live; the governance engine endpoint will be attached shortly.",
-    );
+  // --- Tenant routing: a ready dedicated estate, else the shared sandbox. ---
+  // Provisioning / suspended / failed estates are refused honestly rather than
+  // silently falling back to the sandbox (which would mix the tenant's data).
+  const route = resolveRoute(user, await getEstate(user.id));
+  if (route.kind === "refuse") {
+    return err(route.status, route.code, route.message);
+  }
+  let estateUrl: string | undefined;
+  let sharedSecret: string | undefined;
+  if (route.kind === "estate") {
+    estateUrl = route.url;
+    sharedSecret = route.secret;
+  } else {
+    // --- Estate attachment: be honest when the engine is not publicly hosted yet. ---
+    estateUrl = env("ESTATE_URL");
+    sharedSecret = env("ESTATE_SHARED_SECRET");
+    if (!estateUrl) {
+      return err(
+        503,
+        "estate_not_attached",
+        "The sandbox estate is not attached yet. The portal is live; the governance engine endpoint will be attached shortly.",
+      );
+    }
   }
 
   // --- Proxy. Strip the /api/v1 prefix; keep the query string. ---
@@ -63,7 +79,6 @@ export default async (req: Request, _context: Context): Promise<Response> => {
   if (contentType) headers.set("content-type", contentType);
   const accept = req.headers.get("accept");
   if (accept) headers.set("accept", accept);
-  const sharedSecret = env("ESTATE_SHARED_SECRET");
   if (sharedSecret) headers.set("x-field-auth", sharedSecret);
   headers.set("x-ff-tenant", user.id);
   // Deliberately NOT forwarded: cookie, authorization, x-api-key.

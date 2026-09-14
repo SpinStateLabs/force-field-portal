@@ -25,7 +25,10 @@ describe("session", () => {
 
   it("returns null for a tampered token", async () => {
     const token = await issueSession("tamper-target");
-    const tampered = token.slice(0, -1) + (token.endsWith("A") ? "B" : "A");
+    // Flip a character in the MIDDLE of the signature: the last base64url
+    // character carries padding bits, so flipping it can leave the bytes intact.
+    const cut = token.length - 8;
+    const tampered = token.slice(0, cut) + (token[cut] === "A" ? "B" : "A") + token.slice(cut + 1);
     const req = new Request("http://portal.test/api/me", {
       headers: { cookie: sessionCookie(tampered) },
     });

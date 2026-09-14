@@ -1,8 +1,9 @@
 // Force-Field Portal — tier definitions.
 //
-// price_usd_month values are LAUNCH PLACEHOLDERS subject to change; they are
-// not billed anywhere in v0 (billing endpoints return 501 until Stripe is
-// wired per the README plan).
+// price_usd_month values are DISPLAY copy for the landing page and dashboard.
+// What is billed is the Stripe Price referenced by STRIPE_PRICE_OPERATOR /
+// STRIPE_PRICE_SOVEREIGN (src/lib/stripe.ts); keep the two in agreement.
+// Only the Stripe webhook (src/lib/billing.ts) writes a paid tier.
 //
 // rpm/rpd are Declared limits enforced approximately by src/lib/ratelimit.ts
 // (see the concurrency note there).
