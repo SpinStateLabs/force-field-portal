@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import workerHandler from "../netlify/functions/estate-worker.mts";
+import workerHandler from "../netlify/functions/estate-worker-background.mts";
 import tickHandler from "../netlify/functions/estate-tick.mts";
 import { freshStore } from "./helpers";
 import { createUser, type User } from "../src/lib/users";
@@ -126,7 +126,7 @@ describe("worker loop", () => {
     expect(await kickWorker("u1", "advance", fetchImpl)).toBe(false); // no URL
     process.env.URL = "https://portal.test/";
     expect(await kickWorker("u1", "renew", fetchImpl)).toBe(true);
-    expect(seen.url).toBe("https://portal.test/api/estate/worker");
+    expect(seen.url).toBe("https://portal.test/.netlify/functions/estate-worker-background");
     expect(seen.init.headers["x-ff-internal"]).toBe(internalToken("u1"));
     expect(JSON.parse(seen.init.body)).toEqual({ user_id: "u1", action: "renew" });
   });
@@ -147,19 +147,19 @@ describe("worker and tick functions", () => {
   });
 
   it("worker function: 401 without session or internal token; 501 unconfigured; accepts a session", async () => {
-    const anon = await workerHandler(new Request("http://portal.test/api/estate/worker", { method: "POST", body: "{}" }), ctx);
+    const anon = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", body: "{}" }), ctx);
     expect(anon.status).toBe(401);
-    const forged = await workerHandler(new Request("http://portal.test/api/estate/worker", { method: "POST", headers: { "x-ff-internal": "nope" }, body: JSON.stringify({ user_id: user.id }) }), ctx);
+    const forged = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", headers: { "x-ff-internal": "nope" }, body: JSON.stringify({ user_id: user.id }) }), ctx);
     expect(forged.status).toBe(401);
     const cookie = sessionCookie(await issueSession(user.id)).split(";")[0];
     delete process.env.FLY_API_TOKEN;
-    const off = await workerHandler(new Request("http://portal.test/api/estate/worker", { method: "POST", headers: { cookie }, body: "{}" }), ctx);
+    const off = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", headers: { cookie }, body: "{}" }), ctx);
     expect(off.status).toBe(501);
     process.env.FLY_API_TOKEN = "fo1_test";
-    const ok = await workerHandler(new Request("http://portal.test/api/estate/worker", { method: "POST", headers: { cookie }, body: "{}" }), ctx);
+    const ok = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", headers: { cookie }, body: "{}" }), ctx);
     expect(ok.status).toBe(200);
     expect((await ok.json()).last).toBe("no_estate");
-    const internal = await workerHandler(new Request("http://portal.test/api/estate/worker", { method: "POST", headers: { "x-ff-internal": internalToken(user.id) }, body: JSON.stringify({ user_id: user.id, action: "renew" }) }), ctx);
+    const internal = await workerHandler(new Request("http://portal.test/.netlify/functions/estate-worker-background", { method: "POST", headers: { "x-ff-internal": internalToken(user.id) }, body: JSON.stringify({ user_id: user.id, action: "renew" }) }), ctx);
     expect(internal.status).toBe(200);
   });
 

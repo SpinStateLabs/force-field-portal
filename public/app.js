@@ -347,7 +347,7 @@ let lastKick = 0;
 async function kickWorker() {
   if (Date.now() - lastKick < 30000) return;
   lastKick = Date.now();
-  await api("/api/estate/worker", { method: "POST", body: { action: "advance" } });
+  await api("/.netlify/functions/estate-worker-background", { method: "POST", body: { action: "advance" } });
 }
 
 function startEstatePoll() {

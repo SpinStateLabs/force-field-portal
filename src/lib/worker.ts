@@ -3,7 +3,8 @@
 // Synchronous Netlify functions have a short execution limit (seconds), too
 // short for an estate step that waits on a Fly exec or a machine boot. So the
 // dashboard and the scheduled tick only KICK a background function
-// (/api/estate/worker, up to 15 minutes) and this loop drives the estate's
+// (/.netlify/functions/estate-worker-background, up to 15 minutes; Netlify
+// answers 202 at once) and this loop drives the estate's
 // state machine step by step until it is ready, failed, or the budget is
 // spent. A worker lease on the record keeps two workers off one estate; the
 // per-step lease inside advanceEstate() covers the rest.
@@ -20,7 +21,7 @@ import type { FlyClient } from "./fly";
 import type { FetchLike } from "./fly";
 
 export const WORKER_BUDGET_MS = 12 * 60 * 1000;
-export const WORKER_PATH = "/api/estate/worker";
+export const WORKER_PATH = "/.netlify/functions/estate-worker-background";
 export type WorkerAction = "advance" | "renew";
 
 export function internalToken(userId: string, secret: string | undefined = env("SESSION_SECRET")): string {

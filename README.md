@@ -129,8 +129,9 @@ back to the sandbox, which would mix a tenant's data.
 
 One Fly app per paying account, `ff-est-<8 hex>` (a hash of the user id), built by a
 resumable state machine (`src/lib/estates.ts`) whose steps are idempotent and short. The slow
-work runs in a **background function** (`/api/estate/worker`, up to 15 minutes; synchronous
-functions are limited to seconds): the dashboard kicks it and polls the record, the scheduled
+work runs in a **background function** (`/.netlify/functions/estate-worker-background`, up to
+15 minutes; synchronous functions are limited to seconds, and only the `-background` filename
+suffix makes Netlify run a function in the background): the dashboard kicks it and polls the record, the scheduled
 tick re-kicks any estate whose worker died, and a retry kicks it again:
 
 1. `create_app` → 2. `allocate_ips` (shared v4 + v6) → 3. `create_volume` (`ff_data`, 1 GB)

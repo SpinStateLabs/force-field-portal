@@ -1,5 +1,9 @@
-// estate-worker.mts — Force-Field Portal v0.2.0
-// BACKGROUND function (Netlify answers 202 at once; up to 15 minutes of work):
+// estate-worker-background.mts — Force-Field Portal v0.2.0
+// BACKGROUND function — the `-background` filename suffix is what Netlify
+// honours (a `background: true` config alone deployed as a synchronous
+// function, verified 2026-09-14); it answers 202 at once and may run 15 min.
+// Served only at /.netlify/functions/estate-worker-background (custom paths
+// are not applied to background functions).
 // drives one estate's provisioning to completion, or renews its self-agent
 // tokens. Kicked by the dashboard (session cookie → that user's estate) and by
 // the scheduled tick / retry endpoint (internal HMAC of the user id). Logs
@@ -42,5 +46,4 @@ export default async (req: Request, _context: Context): Promise<Response> => {
 
 export const config: Config = {
   background: true,
-  path: "/api/estate/worker",
 } as Config;
