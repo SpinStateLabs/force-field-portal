@@ -219,6 +219,12 @@ verified, not what a mature SaaS would do.
     first real estate provisions through the site.
   - **Billing: no live Stripe checkout has been performed** (test mode or live). Until an
     operator runs one, treat "sells the paid tiers" as Declared, not Enforced.
+- **Reads are strongly consistent** (`consistency: "strong"` on the store: every read goes to
+  the origin). With the client's default eventual reads, a registration's own follow-up read
+  missed the new user for about 13 s in production (measured 2026-09-14 after the blobs upgrade;
+  the default was the same before it), which would bounce a new user to login, make a fresh API
+  key answer 401 for a while, and let the estate worker read a record older than the one it just
+  saved. Strong reads cost latency on every request.
 - **Rate limiting is approximate.** Counters use read-increment-write blob storage with
   last-write-wins semantics, so concurrent requests can under-count. Limits are Declared,
   not Enforced hard caps.

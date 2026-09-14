@@ -46,7 +46,14 @@ export function env(name: string): string | undefined {
 export async function portalStore(): Promise<KV> {
   if (testStore) return testStore;
   const { getStore, getDeployStore } = await import("@netlify/blobs");
-  const store = env("CONTEXT") === "production" ? getStore("portal") : getDeployStore("portal");
+  // STRONG consistency: reads go to the origin, never a stale edge copy. The
+  // default ("eventual") let a registration's own follow-up read miss the user
+  // for ~13 s in production (measured 2026-09-14), and would let the estate
+  // worker read a record older than the one it just saved. Latency is the price.
+  const store =
+    env("CONTEXT") === "production"
+      ? getStore({ name: "portal", consistency: "strong" })
+      : getDeployStore({ name: "portal", consistency: "strong" });
   return {
     get: (key, opts) => store.get(key, opts as any),
     setJSON: async (key, value) => {
